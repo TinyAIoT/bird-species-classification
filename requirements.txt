@@ -3,6 +3,9 @@ requests>=2.32.4
 pandas>=2.3.0
 opencv-python
 
+torch>=2.4.1
+torchvision>=0.19.1
+
 # Birdiary viewer for data verification
 pywebview>=5.4
 pyinstaller>=6.14.1
