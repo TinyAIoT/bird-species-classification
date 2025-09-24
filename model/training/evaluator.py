@@ -294,7 +294,7 @@ class Evaluator:
         report = f"""
             # Model Classification Report
 
-            {evaluation_results['report']}
+            {evaluation_results['classification_report']}
         """
 
         # Save report
