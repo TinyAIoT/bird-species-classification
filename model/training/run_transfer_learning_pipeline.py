@@ -98,11 +98,11 @@ if __name__ == "__main__":
                 ds["path"] = os.path.join(args.working_dir, ds["path"])
 
             config["output_path"] = output_path
-            weights_path = config.get("weights_path", None)
-            if weights_path is not None:
-                config["weights_path"] = os.path.join(args.working_dir, weights_path)
+            # weights_path = config.get("weights_path", None)
+            # if weights_path is not None:
+            #     config["weights_path"] = os.path.join(args.working_dir, weights_path)
 
-            print(f"Debug : Weights path: {config['weights_path']}")
+            # print(f"Debug : Weights path: {config['weights_path']}")
 
         # Set default parameters if missing
         default_params = {

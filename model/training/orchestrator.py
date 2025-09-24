@@ -176,6 +176,7 @@ class Orchestrator:
         self.evaluator.plot_confusion_matrix(evaluation_results["confusion_matrix"], self.dataset_handler.get_class_names())
         self.evaluator.plot_training_history(final_history, self.initial_epochs if self.fine_tuning_history else None)
         self.evaluator.generate_evaluation_report(evaluation_results)
+        self.evaluator.generate_classification_report(evaluation_results)
 
         # Generate combined training report
         self._generate_combined_training_report(evaluation_results)

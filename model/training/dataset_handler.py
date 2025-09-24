@@ -4,7 +4,7 @@ import torchvision
 from torchvision import datasets, transforms
 from torchvision.transforms import Lambda as L
 from torchvision.transforms import functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 from utils.training_utils import get_default_device, check_corrupted, to_device
 from utils.dataset_utils import SaveEvery_nth_image, CenterCrop, Image_Name_Saver, ImageFolderWithFilename, MappingConcatDataset
 
@@ -36,12 +36,18 @@ class DatasetHandler:
             dataset_transforms = []
             name_saver = Image_Name_Saver()
             dataset_transforms.append(name_saver)
-            for t in dataset.get("transforms", []):
+            for t in dataset.get("transforms", []):                
                 if "resize" in t:
                     params = t["resize"]
                     height = params["height"]
                     width = params["width"]
                     dataset_transforms.append(transforms.Resize((height, width)))
+                if "RandomResizedCrop" in t:
+                    params = t["RandomResizedCrop"]                    
+                    height = params["height"]
+                    width = params["width"]
+                    scale = params["scale"]
+                    dataset_transforms.append(transforms.RandomResizedCrop((height, width), scale=scale))
                 if "RandomCrop" in t:
                     params = t["RandomCrop"]
                     height = params["height"]
@@ -55,22 +61,17 @@ class DatasetHandler:
                 if "rotate" in t:
                     degrees = t["rotate"].get("degrees", 0)
                     dataset_transforms.append(L(lambda img: F.rotate(img, degrees)))
+                if "RandomHorizontalFlip" in t:
+                    p = t["propability"]
+                    dataset_transforms.append(transforms.RandomHorizontalFlip(p=p))
                 if "crop_relative" in t:
                     params = t["crop_relative"]
                     top = params.get("top", 0.0)
                     left = params.get("left", 0.0)
                     height = params["height"]
                     width = params["width"]
-                    dataset_transforms.append(L(lambda img: F.resized_crop(
-                                img,
-                                int(top * img.height),
-                                int(left * img.width),
-                                int(height * img.height),
-                                int(width * img.width),
-                                (img.height, img.width),
-                            )
-                        )
-                    )
+                    dataset_transforms.append(L(lambda img: F.resized_crop(img, int(top * img.height), int(left * img.width), 
+                                                                           int(height * img.height), int(width * img.width), (img.height, img.width))))
                 if "CenterCrop" in t:
                     params = t["CenterCrop"]
                     side = params.get("side", "center")
@@ -83,9 +84,14 @@ class DatasetHandler:
                     left = params.get("left", 0)
                     height = params["height"]
                     width = params["width"]
-                    dataset_transforms.append(
-                        L(lambda img: F.crop(img, top, left, height, width))
-                    )
+                    dataset_transforms.append(L(lambda img: F.crop(img, top, left, height, width)))
+                if "ColorJitter" in t:
+                    params = t["ColorJitter"]
+                    b = params["brightness"]
+                    c = params["contrast"]
+                    s = params["saturation"]
+                    h = params["hue"]
+                    dataset_transforms.append(transforms.ColorJitter(brightness=b, contrast=c, saturation=s, hue=h))
                 if "save_img" in t:
                     params = t["save_img"]
                     n = params.get("n", 100)
@@ -107,7 +113,7 @@ class DatasetHandler:
             print(f"Dataset: {name}, Transform: {transform} \n")
         return transform
 
-    def build_transforms(self):
+    def load_data(self):
         """
         Load (multiple) datasets and apply transformations
         """
@@ -143,9 +149,9 @@ class DatasetHandler:
             val_datasets.append(ImageFolderWithFilename(val_path, transform))
             test_datasets.append(ImageFolderWithFilename(test_path, transform))
 
-        self.train_data = MappingConcatDataset(train_datasets)
-        self.val_data = MappingConcatDataset(val_datasets)
-        self.test_data = MappingConcatDataset(test_datasets)
+        self.train_data = ConcatDataset(train_datasets)
+        self.val_data = ConcatDataset(val_datasets)
+        self.test_data = ConcatDataset(test_datasets)
         if self.check_corrupted_images:
             # Check for corrupted images by trying to open and fully load each file
             for ds in self.train_data.datasets:
@@ -155,12 +161,14 @@ class DatasetHandler:
             for ds in self.test_data.datasets:
                 check_corrupted(ds.samples, "test")
 
-        self.unified_class_to_idx = self.train_data.unified_class_to_idx
-        self.class_names = [key for key, value in self.unified_class_to_idx.items()]
+        all_classes = set()
         for ds in self.train_data.datasets:
-            print(f"Dataset {ds.root} : \n Old class to idx mapping: {ds.class_to_idx}")
-
-        print(f"Unified class to idx mapping: {self.unified_class_to_idx}")
+            print(f"Classes in training dataset {ds.root}: \n {ds.class_to_idx} \n")
+            all_classes.update(ds.classes)
+            if all_classes != set(ds.classes):
+                print(f"Warning: Datasets contain different classes. Check for correct index mapping")
+            
+        self.class_names = sorted(list(all_classes))
         print("All class names: \n")
         print(self.class_names)
         print("Train dataset size:", len(self.train_data))

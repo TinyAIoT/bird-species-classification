@@ -2,7 +2,7 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -72,6 +72,8 @@ class Evaluator:
         test_accuracy = num_correct / num_total
         test_loss = aggregated_loss / num_total
 
+        report = classification_report(all_labels, all_preds, target_names=class_names)
+
         # Print metrics
         print("\nEvaluation Results for model:")
         print("{:<20} {:<30}".format("Metric", "Value"))
@@ -90,6 +92,7 @@ class Evaluator:
             "recall": recall,
             "f1_score": f1,
             "confusion_matrix": cm,
+            "classification_report": report,
         }
 
     def _calculate_precision_recall_f1(self, cm, averaging="micro"):
@@ -279,4 +282,24 @@ class Evaluator:
             f.write(report)
 
         print(f"Evaluation report saved to {os.path.join(self.output_path, self.model_name + '_evaluation_report.txt')}")
+        return report
+
+    def generate_classification_report(self, evaluation_results):
+        """Generate a classification report
+        Args:
+            evaluation_results (dict): Dictionary containing evaluation metrics
+        Returns:
+            str: Formatted classification report as a string
+        """
+        report = f"""
+            # Model Classification Report
+
+            {evaluation_results['report']}
+        """
+
+        # Save report
+        with open(os.path.join(self.output_path, self.model_name + "_classification_report.txt"), "w") as f:
+            f.write(report)
+
+        print(f"Classification report saved to {os.path.join(self.output_path, self.model_name + '_classification_report.txt')}")
         return report

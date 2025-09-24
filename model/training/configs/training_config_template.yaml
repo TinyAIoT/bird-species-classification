@@ -11,22 +11,34 @@ datasets: # List of datasets to be used for training
       # Rotate using torchvision.transforms.functional.rotate
       - rotate: {degrees: -90}
             # degrees (float or int) – Angle to rotate the image, in degrees. NOTE: Positive values mean counter-clockwise rotation.
+
+      # Resize and crop using torchvision.transforms.RandomResizedCrop
+      - RandomResizedCrop : {height: 224, width: 224, scale: [0.8, 1.0]}
+            # height (int) – Desired height of the output image.
+            # width (int) – Desired width of the output image.
+            # scale (tuple of floats) – Range of scale for the crop.
+      
+      # Horizontal flip using torchvision.transforms.RandomHorizontalFlip
+      - RandomHorizontalFlip : {propability: 0.5}
+
+      # Changes in image using torchvision.transforms.ColorJitter
+      - ColorJitter : {brightness: 0.2, contrast: 0.2, saturation: 0.2, hue: 0.1}
       
       # Resize
       # - Note: Resize should be used with caution, as it may distort the image aspect ratio.
-      - resize : {height: 96, width: 96}
+      #- resize : {height: 96, width: 96}
             # height (int) – Desired height of the output image.
             # width (int) – Desired width of the output image.
 
       # Crop using torchvision.transforms.functional.crop
-      - crop : {top : 0, left: 0, height: 96, width: 96}
+      #- crop : {top : 0, left: 0, height: 96, width: 96}
             # top (int) – Vertical component of the top left corner of the crop box.
             # left (int) – Horizontal component of the top left corner of the crop box.
             # height (int) – Height of the crop box.
             # width (int) – Width of the crop box.
 
       # Bottom center crop using PIL.crop
-      - CenterCrop: {side: "bottom", height: 96, width: 96} # Crop the bottom center 96x96 region
+      #- CenterCrop: {side: "bottom", height: 96, width: 96} # Crop the bottom center 96x96 region
             # height (int) – Height of the crop box.
             # width (int) – Width of the crop box.
       
@@ -68,5 +80,5 @@ num_unfreezed_feature_layers: 2  # Number of last feature layers to unfreeze dur
 # Additional parameters
 requires_grad: False # Whether to require gradients for the model parameters (make them trainable) (default: False)
 check_corrupted_images: True # Whether to check for corrupted images in the dataset (default: False)
-pin_memory - True # Whether to pin memory during data loading (default: True)
-profile - False  # Whether to profile the training process (causing training to be interrupted after few steps) (default: False) | FOR DEBUGGING ONLY
+pin_memory: True # Whether to pin memory during data loading (default: True)
+profile:- False  # Whether to profile the training process (causing training to be interrupted after few steps) (default: False) | FOR DEBUGGING ONLY
