@@ -11,7 +11,8 @@ EXCLUDED_VALIDATIONS = [ # Manually crafted list of existing invalid/incorrect c
         "cyanocitta cristata", "poecile atricapillus", "sitta canadensis", "melospiza lincolnii", 
         "molothrus ater", "thryomanes bewickii", "thryothorus ludovicianus", "poecile carolinensis",
         "ardea herodias", "anthornis melanura", "hemiphaga novaeseelandiae", "seiurus aurocapilla",
-        "egretta novaehollandiae", "alopochen aegyptiaca", "sitta pygmaea", "corvus corax", "hirundo rustica"
+        "egretta novaehollandiae", "alopochen aegyptiaca", "sitta pygmaea", "hirundo rustica", 
+        "corvus corax", "accipiter nisus"
     ]
 
 
@@ -50,9 +51,17 @@ def process_movements(station_id, mov, validated_only):
         if name and score is not None:
             predictions.add((name, round(score, 2)))
 
+    environment = mov.get("environment", {})
+
     return {
         "station_id": station_id,
         "mov_id": mov["mov_id"],
+        "start_date": mov["start_date"],
+        "weight": mov.get("weight", ""),
+        # "temperature": environment.get("temperature", ""),
+        # "humidity": environment.get("humidity", ""),
+        # "airpressure": environment.get("airpressure", ""),
+        # "illuminance": environment.get("illuminance", ""),
         "predictions": "; ".join(str(t) for t in sorted(predictions, key=lambda x: x[1], reverse=True)),
         "validations": "; ".join(str(t) for t in sorted(names)),
         "video_link": mov["video"],
@@ -79,7 +88,7 @@ def process_station(session, row, validated_only, output_csv_path, number_moveme
     """Go through the movements of a station and save incrementally to csv."""
     station_id = row["station_id"]
     station_name = str(row["name"])
-    print(f"[INFO] Fetching movements for station {station_name} ({station_id})")
+    #print(f"[INFO] Fetching movements for station {station_name} ({station_id})")
 
     movements_url = f"{BASE_URL}/movement/{station_id}"
     if number_movements:

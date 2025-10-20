@@ -33,8 +33,8 @@ if __name__ == "__main__":
         station_list.append({
             "station_id": station["station_id"],
             "name": station["name"],
-            # "lat": station["location"]["lat"],
-            # "lng": station["location"]["lng"],
+            "lat": station["location"]["lat"],
+            "lng": station["location"]["lng"],
             # "sensebox_id": station.get("sensebox_id", "")
             "last_movement_date": last_movement.get("createdAt") if last_movement else None,
         })
