@@ -195,15 +195,20 @@ def run_filter(args):
                 x = transform(img).unsqueeze(0).to(device)
                 with torch.no_grad():
                     out = model(x)
-                    pred = int(out.argmax(1).item())
-                if idx_to_class[pred] == "no_bird":
+                    probs = torch.softmax(out, dim=1).squeeze(0)
+                    p_no_bird = float(probs[1].item()) * 100.0
+
+                if p_no_bird >= args.threshold:
                     if not moved_any:
                         no_bird_dir.mkdir(parents=True, exist_ok=True)
                         moved_any = True
                     shutil.move(str(img_path), str(no_bird_dir / img_path.name))
-                    print(f"[MOVED] {img_path.relative_to(frames_path)} -> {(no_bird_dir).relative_to(frames_path)}")
+                    print(f"[MOVED] {img_path.relative_to(frames_path)} "
+                          f"-> {(no_bird_dir).relative_to(frames_path)} "
+                          f"(P(no_bird)={p_no_bird:.1f}%)")
             except Exception as e:
                 print(f"[ERROR] Failed on {img_path}: {e}")
+
 
 
 def main():
@@ -227,6 +232,7 @@ def main():
     pr.add_argument("--frames-dir", type=str, required=True,
                     help="Path with species subfolders that contain *.jpg frames.")
     pr.add_argument("--img-size", type=int, default=224)
+    pr.add_argument("--threshold", type=float, default=90.0, help="Only move images if P(no_bird) ≥ this value. Default: 90.")
 
     args = parser.parse_args()
 
