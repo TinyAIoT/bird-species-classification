@@ -278,6 +278,19 @@ if __name__ == "__main__":
         print(f"{prec_tag} before quantization: {results[prec_tag+'_test'][0]:.2f}%")
         print(f"{prec_tag} after quantization: {results[prec_tag+'_test_quant'][0]:.2f}%")
 
-    # concatente the results and export to a csv file
+    results.update({
+        "model_name": config["model_name"],
+        "batch_size": BATCH_SIZE,
+        "opt_level": args.opt_level,
+        "iterations": args.iterations,
+        "value_threshold": args.value_threshold,
+        "including_bias": bool(args.including_bias),
+        "bias_multiplier": args.bias_multiplier,
+        "including_act": bool(args.including_act),
+        "act_multiplier": args.act_multiplier,
+    })
+
+    # concatenate the results and export to a csv file
+    output_csv_path = config["output_path"] + config["model_name"] + "_quant-metrics.csv"
     results_df = pd.DataFrame(results)
-    results_df.to_csv(config["output_path"] + config["model_name"] + "_quant-metrics.csv", index=False)
+    results_df.to_csv(output_csv_path, mode="a", header=not os.path.exists(output_csv_path), index=False)
