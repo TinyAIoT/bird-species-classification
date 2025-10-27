@@ -1,2 +1,0 @@
-`calib_util.py` copy from  [ppq/samples/Imagenet/Utilities/Imagenet](https://github.com/OpenPPL/ppq/tree/e39eecb9f7e5f017c28f180cb423f8a685c3db48/ppq/samples/Imagenet/Utilities/Imagenet)
-Rewritten for plant village dataset

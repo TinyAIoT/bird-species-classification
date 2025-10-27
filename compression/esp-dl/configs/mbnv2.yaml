@@ -2,8 +2,8 @@
 batch_size: 32
 img_height: 224
 img_width: 224
-input_model_path: model/results/birdiary_v5_efficient/birdiary_v5_efficient_fine_tuning.pth
+input_model_path: model/results/birdiary_v5_mobilenet/birdiary_v5_mobilenet_fine_tuning.pth
 dataset_path: data/v5/dataset/
-output_path: model/results/birdiary_v5_efficient/compression/
-model_name: birdiary_v5_efficientnet_layerwise_equalization
+output_path: model/results/birdiary_v5_mobilenet/compression/
+model_name: birdiary_v5_mobilenetnet_layerwise_equalization
 quant_config: LayerwiseEqualization_quantization # [None, "LayerwiseEqualization_quantization", "MixedPrecision_quantization"]

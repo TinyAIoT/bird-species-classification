@@ -21,7 +21,6 @@ def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k
     prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
     """
-    
     maxk = max(topk)
     batch_size = target.size(0)
 
@@ -45,7 +44,7 @@ def load_pv_from_directory(
     num_of_workers: int = 12,
     img_height: int = 224,
     img_width: int = 224
-) -> torch.utils.data.DataLoader:
+) -> tuple[datasets.ImageFolder, torch.utils.data.DataLoader]:
     """
     A standardized Imagenet data loading process,
     directory: The location where the data is loaded
@@ -54,38 +53,39 @@ def load_pv_from_directory(
     require_label: Whether labels are required
     shuffle: Whether to shuffle the dataset
     """
-
     dataset = datasets.ImageFolder(
         directory,
         transforms.Compose([
             transforms.Resize((img_height, img_width)),
             transforms.ToTensor(),
-            transforms.Lambda(lambda x: (x - 0.5) * 2),  # Rescale from [0, 1] to [-1, 1]
-            transforms.Lambda(lambda x: x.permute(1, 2, 0)),  # Change from (C, H, W) to (H, W, C)
+            # transforms.Lambda(lambda x: (x - 0.5) * 2),  # Rescale from [0, 1] to [-1, 1]
+            # transforms.Lambda(lambda x: x.permute(1, 2, 0)),  # Change from (C, H, W) to (H, W, C)
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # Normalize to [-1, 1]
         ]),
     )
 
     if subset:
         dataset = Subset(dataset, indices=[_ for _ in range(0, subset)])
     if require_label:
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=batchsize,
-            shuffle=shuffle,
-            num_workers=num_of_workers,
-            pin_memory=False,
-            drop_last=True,  # The onnx model does not support dynamic batch size, the last batch may be misaligned, so drop it (approx translation)
+        dataloader = torch.utils.data.DataLoader(
+            dataset = dataset,
+            batch_size = batchsize,
+            shuffle = shuffle,
+            num_workers = num_of_workers,
+            pin_memory = False,
+            drop_last = True,  # The onnx model does not support dynamic batch size, the last batch may be misaligned, so drop it
         )
     else:
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=batchsize,
-            shuffle=shuffle,
-            num_workers=num_of_workers,
-            pin_memory=False,
-            collate_fn=lambda x: torch.cat([sample[0].unsqueeze(0) for sample in x], dim=0),
-            drop_last=False,  # Data without labels is calibration data, so no need to drop (approx translation)
+        dataloader = torch.utils.data.DataLoader(
+            dataset = dataset,
+            batch_size = batchsize,
+            shuffle = shuffle,
+            num_workers = num_of_workers,
+            pin_memory = False,
+            collate_fn = lambda x: torch.cat([sample[0].unsqueeze(0) for sample in x], dim=0),
+            drop_last = False,  # Data without labels is calibration data, so no need to drop
         )
+    return dataset, dataloader
 
 
 def evaluate_torch_module_with_imagenet(
@@ -120,59 +120,6 @@ def evaluate_torch_module_with_imagenet(
         )
 
 
-# def evaluate_onnx_module_with_imagenet(
-#     onnxruntime_model_path: str,
-#     imagenet_validation_dir: str = None,
-#     batchsize: int = 32,
-#     device: str = "cuda",
-#     imagenet_validation_loader: DataLoader = None,
-#     verbose: bool = True,
-# ) -> pd.DataFrame:
-#     sess = onnxruntime.InferenceSession(
-#         path_or_bytes=onnxruntime_model_path, providers=["CUDAExecutionProvider"]
-#     )
-#     input_placeholder_name = sess.get_inputs()[0].name
-#     with torch.no_grad():
-#         # TODO 可能导致一些内存资源浪费
-#         model_forward_function = lambda input_tensor: torch.tensor(
-#             sess.run(
-#                 input_feed={input_placeholder_name: input_tensor.cpu().numpy()},
-#                 output_names=None,
-#             )
-#         )[0]
-#         return _evaluate_any_module_with_imagenet(
-#             model_forward_function=model_forward_function,
-#             batchsize=batchsize,
-#             device=device,
-#             imagenet_validation_dir=imagenet_validation_dir,
-#             imagenet_validation_loader=imagenet_validation_loader,
-#             verbose=verbose,
-#         )
-
-
-# def evaluate_mmlab_module_with_imagenet(
-#     model: torch.nn.Module,
-#     imagenet_validation_dir: str = None,
-#     batchsize: int = 32,
-#     device: str = "cuda",
-#     imagenet_validation_loader: DataLoader = None,
-#     verbose: bool = True,
-# ) -> pd.DataFrame:
-#     model.eval()
-#     with torch.no_grad():
-#         model_forward_function = lambda input_tensor: model.forward_test(
-#             input_tensor, img_metas={}
-#         )
-#         return _evaluate_any_module_with_imagenet(
-#             model_forward_function=model_forward_function,
-#             batchsize=batchsize,
-#             device=device,
-#             imagenet_validation_dir=imagenet_validation_dir,
-#             imagenet_validation_loader=imagenet_validation_loader,
-#             verbose=verbose,
-#         )
-
-
 def evaluate_ppq_module_with_pv(
     model: BaseGraph,
     imagenet_validation_dir: str = None,
@@ -190,7 +137,6 @@ def evaluate_ppq_module_with_pv(
     A logic set for testing PPQ modules,
     simply feed in ppq.IR.BaseGraph (approx translation)
     """
-
     executor = TorchExecutor(graph=model, device=device)
     model_forward_function = lambda input_tensor: torch.tensor(executor(*[input_tensor])[0])
     return _evaluate_any_module_with_pv(
@@ -205,35 +151,6 @@ def evaluate_ppq_module_with_pv(
         print_confusion_matrix=print_confusion_matrix,
         confusion_matrix_path=confusion_matrix_path,
         topk=topk,
-    )
-
-
-def evaluate_ppq_module_with_ants(
-    model: BaseGraph,
-    imagenet_validation_dir: str = None,
-    batchsize: int = 32,
-    device: str = "cuda",
-    imagenet_validation_loader: DataLoader = None,
-    verbose: bool = True,
-    img_height: int = 224,
-    img_width: int = 224,
-) -> pd.DataFrame:
-    """
-    A logic set for testing PPQ modules,
-    simply feed in ppq.IR.BaseGraph (approx translation)
-    """
-
-    executor = TorchExecutor(graph=model, device=device)
-    model_forward_function = lambda input_tensor: torch.tensor(executor(*[input_tensor])[0])
-    return _evaluate_any_module_with_imagenet(
-        model_forward_function=model_forward_function,
-        batchsize=batchsize,
-        device=device,
-        imagenet_validation_dir=imagenet_validation_dir,
-        imagenet_validation_loader=imagenet_validation_loader,
-        verbose=verbose,
-        img_height=img_height,
-        img_width=img_width
     )
 
 

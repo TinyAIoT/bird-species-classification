@@ -19,15 +19,12 @@ import yaml
 import json
 import torch
 from utilities.calib_util import (
+    load_pv_from_directory,
     evaluate_ppq_module_with_pv,
     evaluate_torch_module_with_imagenet,
 )
 from esp_ppq import QuantizationSettingFactory, QuantizationSetting
 from esp_ppq.api import espdl_quantize_torch, get_target_platform
-from torch.utils.data import DataLoader
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
-from torch.utils.data.dataset import Subset
 import argparse
 import torch.nn as nn
 import pandas as pd
@@ -120,6 +117,7 @@ if __name__ == "__main__":
             input_model_path = os.path.join(args.working_dir, input_model_subpath)
             dataset_path = os.path.join(args.working_dir, dataset_subpath)
             output_path = os.path.join(args.working_dir, output_subpath)
+            os.makedirs(output_path, exist_ok=True)
             config["input_model_path"] = input_model_path
             config["dataset_path"] = dataset_path
             config["output_path"] = output_path
@@ -164,43 +162,27 @@ if __name__ == "__main__":
     # --------------------------------------------
     if os.path.exists(CALIB_DIR):
         print(f"load calibration dataset from directory: {CALIB_DIR}")
-        dataset = datasets.ImageFolder(
-            CALIB_DIR,
-            transforms.Compose([
-                transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), # Normalize to [-1, 1]
-            ]),
-        )
-        dataset = Subset(dataset, indices=[_ for _ in range(0, 1024)])
-        dataloader = DataLoader(
-            dataset=dataset,
-            batch_size=BATCH_SIZE,
-            shuffle=False,
-            num_workers=config.get("num_workers", 4),
-            pin_memory=False,
-            collate_fn=collate_fn1,
+        dataset, dataloader = load_pv_from_directory(
+            directory=CALIB_DIR, 
+            subset=1024,
+            batchsize=BATCH_SIZE,
+            require_label=False,
+            num_of_workers=config.get("num_workers", 4),
+            img_height=IMAGE_HEIGHT, 
+            img_width=IMAGE_WIDTH
         )
     else:
         raise ValueError("Please provide valid calibration dataset path")
 
     if os.path.exists(TEST_DIR):
         print(f"load testing dataset from directory: {TEST_DIR}")
-        test_dataset = datasets.ImageFolder(
-            TEST_DIR,
-            transforms.Compose([
-                transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # Normalize to [-1, 1]
-            ]),
-        )
-        test_dataloader = DataLoader(
-            dataset=test_dataset,
-            batch_size=BATCH_SIZE,
-            shuffle=False,
-            num_workers=config.get("num_workers", 4),
-            pin_memory=False,
-            drop_last=True,  # The onnx model does not support dynamic batchsize, and the data size of the last batch may not be aligned, so the last batch of data is discarded
+        test_dataset, test_dataloader = load_pv_from_directory(
+            directory=TEST_DIR, 
+            batchsize=BATCH_SIZE,
+            require_label=True,
+            num_of_workers=config.get("num_workers", 4),
+            img_height=IMAGE_HEIGHT, 
+            img_width=IMAGE_WIDTH
         )
     else:
         raise ValueError("Provide valid testing dataset path")
@@ -242,7 +224,7 @@ if __name__ == "__main__":
         batchsize=BATCH_SIZE,
         device=DEVICE,
         imagenet_validation_loader=test_dataloader,
-        verbose=True,
+        verbose=1,
         img_height=IMAGE_HEIGHT,
         img_width=IMAGE_WIDTH,
         print_confusion_matrix=True,
