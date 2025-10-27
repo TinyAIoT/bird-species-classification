@@ -1,9 +1,0 @@
-# Config for MobileNetV2 model compression calibrated on Cifar_10 dataset
-batch_size: 32
-img_height: 32
-img_width: 32
-input_model_path: results/torch/torch_squeezenet_cifar/torch_squeezenet_cifar.pth
-dataset_path: data/cifar/ # plant-village, birds
-output_path: results/torch/torch_squeezenet_cifar/
-model_name: torch_squeezenet_cifar_layerwise_equalization
-quant_config: LayerwiseEqualization_quantization # [None, "LayerwiseEqualization_quantization", "MixedPrecision_quantization"]

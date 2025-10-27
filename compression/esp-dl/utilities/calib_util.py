@@ -1,14 +1,14 @@
 import time
 from typing import Callable
 
-#import onnxruntime
+import onnxruntime
 import pandas as pd
 import torch
 import torch.utils.data
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-from ppq.executor.torch import TorchExecutor
-from ppq.IR import BaseGraph
+from esp_ppq.executor.torch import TorchExecutor
+from esp_ppq.IR import BaseGraph
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Subset
 from tqdm import tqdm
@@ -17,12 +17,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
-
-
 def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k
     prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
     """
+    
     maxk = max(topk)
     batch_size = target.size(0)
 
@@ -55,18 +54,17 @@ def load_pv_from_directory(
     require_label: Whether labels are required
     shuffle: Whether to shuffle the dataset
     """
+
     dataset = datasets.ImageFolder(
         directory,
-        transforms.Compose(
-            [
-                transforms.Resize((img_height,img_width)),
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: (x - 0.5) * 2),  # Rescale from [0, 1] to [-1, 1]
-                transforms.Lambda(lambda x: x.permute(1, 2, 0)),  # Change from (C, H, W) to (H, W, C)
-            ]
-        ),
+        transforms.Compose([
+            transforms.Resize((img_height, img_width)),
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: (x - 0.5) * 2),  # Rescale from [0, 1] to [-1, 1]
+            transforms.Lambda(lambda x: x.permute(1, 2, 0)),  # Change from (C, H, W) to (H, W, C)
+        ]),
     )
-    
+
     if subset:
         dataset = Subset(dataset, indices=[_ for _ in range(0, subset)])
     if require_label:
@@ -76,7 +74,7 @@ def load_pv_from_directory(
             shuffle=shuffle,
             num_workers=num_of_workers,
             pin_memory=False,
-            drop_last=True,  # onnx 模型不支持动态 batchsize，最后一个批次的数据尺寸可能不对齐，因此丢掉最后一个批次的数据
+            drop_last=True,  # The onnx model does not support dynamic batch size, the last batch may be misaligned, so drop it (approx translation)
         )
     else:
         return torch.utils.data.DataLoader(
@@ -85,10 +83,8 @@ def load_pv_from_directory(
             shuffle=shuffle,
             num_workers=num_of_workers,
             pin_memory=False,
-            collate_fn=lambda x: torch.cat(
-                [sample[0].unsqueeze(0) for sample in x], dim=0
-            ),
-            drop_last=False,  # 不需要标签的数据为 calib 数据，无需 drop
+            collate_fn=lambda x: torch.cat([sample[0].unsqueeze(0) for sample in x], dim=0),
+            drop_last=False,  # Data without labels is calibration data, so no need to drop (approx translation)
         )
 
 
@@ -102,8 +98,10 @@ def evaluate_torch_module_with_imagenet(
     img_height: int = 224,
     img_width: int = 224,
     print_confusion_matrix: bool = False,
-    confusion_matrix_path: str = "confusion_matrix.png"
+    confusion_matrix_path: str = "confusion_matrix.png",
+    topk: tuple = (1,),
 ) -> pd.DataFrame:
+    
     model.eval()
     with torch.no_grad():
         model_forward_function = lambda input_tensor: model(input_tensor)
@@ -117,7 +115,8 @@ def evaluate_torch_module_with_imagenet(
             img_height=img_height,
             img_width=img_width,
             print_confusion_matrix=print_confusion_matrix,
-            confusion_matrix_path=confusion_matrix_path
+            confusion_matrix_path=confusion_matrix_path,
+            topk=topk
         )
 
 
@@ -184,17 +183,16 @@ def evaluate_ppq_module_with_pv(
     img_height: int = 224,
     img_width: int = 224,
     print_confusion_matrix: bool = False,
-    confusion_matrix_path: str = "confusion_matrix.png"
+    confusion_matrix_path: str = "confusion_matrix.png",
+    topk: tuple = (1,)
 ) -> pd.DataFrame:
     """
-    一套用来测试 ppq 模块的逻辑，
-    直接送入 ppq.IR.BaseGraph 就好了
+    A logic set for testing PPQ modules,
+    simply feed in ppq.IR.BaseGraph (approx translation)
     """
 
     executor = TorchExecutor(graph=model, device=device)
-    model_forward_function = lambda input_tensor: torch.tensor(
-        executor(*[input_tensor])[0]
-    )
+    model_forward_function = lambda input_tensor: torch.tensor(executor(*[input_tensor])[0])
     return _evaluate_any_module_with_pv(
         model_forward_function=model_forward_function,
         batchsize=batchsize,
@@ -205,8 +203,10 @@ def evaluate_ppq_module_with_pv(
         img_height=img_height,
         img_width=img_width,
         print_confusion_matrix=print_confusion_matrix,
-        confusion_matrix_path=confusion_matrix_path
+        confusion_matrix_path=confusion_matrix_path,
+        topk=topk,
     )
+
 
 def evaluate_ppq_module_with_ants(
     model: BaseGraph,
@@ -219,14 +219,12 @@ def evaluate_ppq_module_with_ants(
     img_width: int = 224,
 ) -> pd.DataFrame:
     """
-    一套用来测试 ppq 模块的逻辑，
-    直接送入 ppq.IR.BaseGraph 就好了
+    A logic set for testing PPQ modules,
+    simply feed in ppq.IR.BaseGraph (approx translation)
     """
 
     executor = TorchExecutor(graph=model, device=device)
-    model_forward_function = lambda input_tensor: torch.tensor(
-        executor(*[input_tensor])[0]
-    )
+    model_forward_function = lambda input_tensor: torch.tensor(executor(*[input_tensor])[0])
     return _evaluate_any_module_with_imagenet(
         model_forward_function=model_forward_function,
         batchsize=batchsize,
@@ -243,6 +241,7 @@ def _evaluate_any_module_with_pv(
     model_forward_function: Callable,
     imagenet_validation_dir: str,
     batchsize: int = 32,
+    topk: tuple = (1,),
     device: str = "cuda",
     imagenet_validation_loader: DataLoader = None,
     verbose: bool = True,
@@ -250,28 +249,28 @@ def _evaluate_any_module_with_pv(
     img_width: int = 224,
     print_confusion_matrix: bool = False,
     confusion_matrix_path: str = "confusion_matrix.png"
-
 ):
     """
-    一套十分标准的imagenet测试逻辑
+    A very standard ImageNet testing logic (approx translation)
     """
-
-    recorder = {"loss": [], "top1_accuracy": [], "top5_accuracy": [], "batch_time": []}
+    recorder = {"loss": [], "batch_time": []}
+    for k in topk:
+        recorder[f"top{k}_accuracy"] = []
     all_preds = []
     all_labels = []
-    
+
     if imagenet_validation_loader is None:
         imagenet_validation_loader = load_pv_from_directory(
-            imagenet_validation_dir, batchsize=batchsize, shuffle=False, img_width=img_width, img_height=img_height
+            imagenet_validation_dir,
+            batchsize=batchsize,
+            shuffle=False,
+            img_width=img_width,
+            img_height=img_height,
         )
 
     loss_fn = torch.nn.CrossEntropyLoss().to("cpu")
 
-    for batch_idx, (batch_input, batch_label) in tqdm(
-        enumerate(imagenet_validation_loader),
-        desc="Evaluating Model...",
-        total=len(imagenet_validation_loader),
-    ):
+    for batch_idx, (batch_input, batch_label) in tqdm(enumerate(imagenet_validation_loader), desc="Evaluating Model...", total=len(imagenet_validation_loader)):
         batch_input = batch_input.to(device)
         batch_label = batch_label.to(device)
         batch_time_mark_point = time.time()
@@ -282,37 +281,28 @@ def _evaluate_any_module_with_pv(
 
         recorder["batch_time"].append(time.time() - batch_time_mark_point)
         recorder["loss"].append(loss_fn(batch_pred.to("cpu"), batch_label.to("cpu")))
-        prec1, prec5 = accuracy(
-            torch.tensor(batch_pred).to("cpu"), batch_label.to("cpu"), topk=(1, 5)
-        )
-        recorder["top1_accuracy"].append(prec1.item())
-        recorder["top5_accuracy"].append(prec5.item())
+
+        precs = accuracy(torch.tensor(batch_pred).to("cpu"), batch_label.to("cpu"), topk=topk)
+        for i, k in enumerate(topk):
+            recorder[f"top{k}_accuracy"].append(precs[i].item())
 
         # Store predictions and labels for confusion matrix
         all_preds.extend(torch.argmax(batch_pred, dim=1).cpu().numpy())
         all_labels.extend(batch_label.cpu().numpy())
 
         if batch_idx % 100 == 0 and verbose:
-            print(
-                "Test: [{0} / {1}]\t"
-                "Prec@1 {top1:.3f} ({top1:.3f})\t"
-                "Prec@5 {top5:.3f} ({top5:.3f})".format(
-                    batch_idx,
-                    len(imagenet_validation_loader),
-                    top1=sum(recorder["top1_accuracy"])
-                    / len(recorder["top1_accuracy"]),
-                    top5=sum(recorder["top5_accuracy"])
-                    / len(recorder["top5_accuracy"]),
-                )
-            )
+            topk_status = "\t".join([
+                f"Prec@{k} {sum(recorder[f'top{k}_accuracy']) / len(recorder[f'top{k}_accuracy']):.3f} ({sum(recorder[f'top{k}_accuracy']) / len(recorder[f'top{k}_accuracy']):.3f})"
+                for k in topk
+            ])
+            print(f"Test: [{batch_idx} / {len(imagenet_validation_loader)}]\t{topk_status}")
 
     if verbose:
-        print(
-            " * Prec@1 {top1:.3f} Prec@5 {top5:.3f}".format(
-                top1=sum(recorder["top1_accuracy"]) / len(recorder["top1_accuracy"]),
-                top5=sum(recorder["top5_accuracy"]) / len(recorder["top5_accuracy"]),
-            )
-        )
+        topk_status = " ".join([
+            f"Prec@{k} {sum(recorder[f'top{k}_accuracy']) / len(recorder[f'top{k}_accuracy']):.3f}"
+            for k in topk
+        ])
+        print(f" * {topk_status}")
 
     if print_confusion_matrix:
         cm = confusion_matrix(all_labels, all_preds)
@@ -320,41 +310,48 @@ def _evaluate_any_module_with_pv(
         print(cm)
 
         plt.figure(figsize=(10, 7))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
-        plt.title('Confusion Matrix')
-        plt.xlabel('Predicted')
-        plt.ylabel('Actual')
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", cbar=False)
+        plt.title("Confusion Matrix")
+        plt.xlabel("Predicted")
+        plt.ylabel("Actual")
         plt.savefig(confusion_matrix_path)
-    
+
     # dump records toward dataframe
     dataframe = pd.DataFrame()
     for column_name in recorder:
         dataframe[column_name] = recorder[column_name]
     return dataframe
 
+
 def _evaluate_any_module_with_imagenet(
     model_forward_function: Callable,
     imagenet_validation_dir: str,
     batchsize: int = 32,
+    topk: tuple = (1,),
     device: str = "cuda",
     imagenet_validation_loader: DataLoader = None,
     verbose: bool = True,
     img_height: int = 224,
     img_width: int = 224,
     print_confusion_matrix: bool = False,
-    confusion_matrix_path: str = "confusion_matrix.png"
+    confusion_matrix_path: str = "confusion_matrix.png",
 ):
     """
-    一套十分标准的imagenet测试逻辑
+    A very standard ImageNet testing logic (approx translation)
     """
-
-    recorder = {"loss": [], "top1_accuracy": [], "top5_accuracy": [], "batch_time": []}
+    recorder = {"loss": [], "batch_time": []}
+    for k in topk:
+        recorder[f"top{k}_accuracy"] = []
     all_preds = []
     all_labels = []
 
     if imagenet_validation_loader is None:
         imagenet_validation_loader = load_imagenet_from_directory(
-            imagenet_validation_dir, batchsize=batchsize, shuffle=False, img_width=img_width, img_height=img_height
+            imagenet_validation_dir,
+            batchsize=batchsize,
+            shuffle=False,
+            img_width=img_width,
+            img_height=img_height,
         )
 
     loss_fn = torch.nn.CrossEntropyLoss().to("cpu")
@@ -374,37 +371,23 @@ def _evaluate_any_module_with_imagenet(
 
         recorder["batch_time"].append(time.time() - batch_time_mark_point)
         recorder["loss"].append(loss_fn(batch_pred.to("cpu"), batch_label.to("cpu")))
-        prec1, prec5 = accuracy(
-            torch.tensor(batch_pred).to("cpu"), batch_label.to("cpu"), topk=(1, 5)
-        )
-        recorder["top1_accuracy"].append(prec1.item())
-        recorder["top5_accuracy"].append(prec5.item())
+
+        precs = accuracy(torch.tensor(batch_pred).to("cpu"), batch_label.to("cpu"), topk=topk)
+        for i, k in enumerate(topk):
+            recorder[f"top{k}_accuracy"].append(precs[i].item())
 
         # Store predictions and labels for confusion matrix
         all_preds.extend(torch.argmax(batch_pred, dim=1).cpu().numpy())
         all_labels.extend(batch_label.cpu().numpy())
 
         if batch_idx % 100 == 0 and verbose:
-            print(
-                "Test: [{0} / {1}]\t"
-                "Prec@1 {top1:.3f} ({top1:.3f})\t"
-                "Prec@5 {top5:.3f} ({top5:.3f})".format(
-                    batch_idx,
-                    len(imagenet_validation_loader),
-                    top1=sum(recorder["top1_accuracy"])
-                    / len(recorder["top1_accuracy"]),
-                    top5=sum(recorder["top5_accuracy"])
-                    / len(recorder["top5_accuracy"]),
-                )
-            )
+            topk_status = "\t".join([f"Prec@{k} {sum(recorder[f'top{k}_accuracy']) / len(recorder[f'top{k}_accuracy']):.3f} ({sum(recorder[f'top{k}_accuracy']) / len(recorder[f'top{k}_accuracy']):.3f})" for k in topk])
+            print(f"Test: [{batch_idx} / {len(imagenet_validation_loader)}]\t{topk_status}")
 
     if verbose:
-        print(
-            " * Prec@1 {top1:.3f} Prec@5 {top5:.3f}".format(
-                top1=sum(recorder["top1_accuracy"]) / len(recorder["top1_accuracy"]),
-                top5=sum(recorder["top5_accuracy"]) / len(recorder["top5_accuracy"]),
-            )
-        )
+        topk_status = " ".join([f"Prec@{k} {sum(recorder[f'top{k}_accuracy']) / len(recorder[f'top{k}_accuracy']):.3f}" 
+        for k in topk])
+        print(f" * {topk_status}")
 
     if print_confusion_matrix:
         cm = confusion_matrix(all_labels, all_preds)
@@ -412,16 +395,17 @@ def _evaluate_any_module_with_imagenet(
         print(cm)
 
         plt.figure(figsize=(10, 7))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
-        plt.title('Confusion Matrix')
-        plt.xlabel('Predicted')
-        plt.ylabel('Actual')
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", cbar=False)
+        plt.title("Confusion Matrix")
+        plt.xlabel("Predicted")
+        plt.ylabel("Actual")
         plt.savefig(confusion_matrix_path)
-    
+
     dataframe = pd.DataFrame()
     for column_name in recorder:
         dataframe[column_name] = recorder[column_name]
     return dataframe
+
 
 def load_imagenet_from_directory(
     directory: str,
@@ -455,23 +439,20 @@ def load_imagenet_from_directory(
         dataset = Subset(dataset, indices=[_ for _ in range(0, subset)])
     if require_label:
         return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=batchsize,
-            shuffle=shuffle,
-            num_workers=num_of_workers,
-            pin_memory=False,
-            drop_last=True,  # onnx 模型不支持动态 batchsize，最后一个批次的数据尺寸可能不对齐，因此丢掉最后一个批次的数据
+            dataset = dataset,
+            batch_size = batchsize,
+            shuffle = shuffle,
+            num_workers = num_of_workers,
+            pin_memory = False,
+            drop_last = True,  # The onnx model does not support dynamic batch size, the last batch may be misaligned, so drop it
         )
     else:
         return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=batchsize,
-            shuffle=shuffle,
-            num_workers=num_of_workers,
-            pin_memory=False,
-            collate_fn=lambda x: torch.cat(
-                [sample[0].unsqueeze(0) for sample in x], dim=0
-            ),
-            drop_last=False,  # 不需要标签的数据为 calib 数据，无需 drop
+            dataset = dataset,
+            batch_size = batchsize,
+            shuffle = shuffle,
+            num_workers = num_of_workers,
+            pin_memory = False,
+            collate_fn = lambda x: torch.cat([sample[0].unsqueeze(0) for sample in x], dim=0),
+            drop_last = False,  # Data without labels is calibration data, so no need to drop
         )
-

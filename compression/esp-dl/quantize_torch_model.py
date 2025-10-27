@@ -10,14 +10,20 @@
 # - model_name: The name of the model.
 # - quant_config: The quantization configuration. The supported values are None, "LayerwiseEqualization_quantization", and "MixedPrecision_quantization".
 
+# -------------------------------------------
+# Import Libraries
+# --------------------------------------------
 import os
 from typing import Tuple, List, Tuple
 import yaml
 import json
 import torch
-from utilities.calib_util import evaluate_ppq_module_with_pv, evaluate_torch_module_with_imagenet
-from ppq import QuantizationSettingFactory, QuantizationSetting
-from ppq.api import espdl_quantize_torch, get_target_platform
+from utilities.calib_util import (
+    evaluate_ppq_module_with_pv,
+    evaluate_torch_module_with_imagenet,
+)
+from esp_ppq import QuantizationSettingFactory, QuantizationSetting
+from esp_ppq.api import espdl_quantize_torch, get_target_platform
 from torch.utils.data import DataLoader
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
@@ -30,20 +36,20 @@ import pandas as pd
 # Helper Functions
 # --------------------------------------------
 
+
 # Pretty print the quantization settings
 def pretty_print_settings(d, indent=0):
-   for key, value in d.items():
-      print('\t' * indent + str(key))
-      if hasattr(value, '__dict__'):
-        if isinstance(value.__dict__, dict):      
-          pretty_print_settings(value.__dict__, indent+1)
-      else:
-         print('\t' * (indent+1) + str(value))
+    for key, value in d.items():
+        print("\t" * indent + str(key))
+        if hasattr(value, "__dict__"):
+            if isinstance(value.__dict__, dict):
+                pretty_print_settings(value.__dict__, indent + 1)
+        else:
+            print("\t" * (indent + 1) + str(value))
+
 
 # Set the quantization settings for the model
-def set_quant_settings(
-    optim_quant_method: List[str] = None,
-) -> QuantizationSetting:
+def set_quant_settings(optim_quant_method: List[str] = None) -> QuantizationSetting:
     """Quantize onnx model with optim_quant_method.
 
     Args:
@@ -62,14 +68,8 @@ def set_quant_settings(
         if "MixedPrecision_quantization" in optim_quant_method:
             # These layers have larger errors in 8-bit quantization, dispatching to 16-bit quantization.
             # You can remove or add layers according to your needs.
-            quant_setting.dispatching_table.append(
-                "/features/features.1/conv/conv.0/conv.0.0/Conv",
-                get_target_platform(TARGET, 16, True),
-            )
-            quant_setting.dispatching_table.append(
-                "/features/features.16/conv/conv.1/conv.1.0/Conv",
-                get_target_platform(TARGET, 16, True),
-            )
+            quant_setting.dispatching_table.append("/features/features.1/conv/conv.0/conv.0.0/Conv", get_target_platform(TARGET, 16, True))
+            quant_setting.dispatching_table.append("/features/features.16/conv/conv.1/conv.1.0/Conv", get_target_platform(TARGET, 16, True))
         elif "LayerwiseEqualization_quantization" in optim_quant_method:
             # layerwise equalization
             quant_setting.equalization = True
@@ -81,13 +81,11 @@ def set_quant_settings(
             quant_setting.equalization_setting.including_act = args.including_act
             quant_setting.equalization_setting.act_multiplier = args.act_multiplier
             quant_setting.equalization_setting.interested_layers = None
-            
+
             print("Quantization settings: ")
             pretty_print_settings(quant_setting.__dict__)
         else:
-            raise ValueError(
-                "Please set optim_quant_method correctly. Support 'MixedPrecision_quantization', 'LayerwiseEqualization_quantization'"
-            )
+            raise ValueError("Please set optim_quant_method correctly. Support 'MixedPrecision_quantization', 'LayerwiseEqualization_quantization'")
     return quant_setting
 
 
@@ -100,10 +98,9 @@ def collate_fn2(batch: torch.Tensor) -> torch.Tensor:
 
 
 if __name__ == "__main__":
-    
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--config", type=str, required=True , help="Path to the config file.")
-    argparser.add_argument("--working_dir", type=str, default="./", help="Path to local data directory.")
+    argparser.add_argument("--working_dir", type=str, required=True, help="Path to local data directory.")
     argparser.add_argument("--opt_level", type=int, default=2, help="Optimization level for equalization.")
     argparser.add_argument("--iterations", type=int, default=10, help="Number of iterations for equalization.")
     argparser.add_argument("--value_threshold", type=float, default=0.5, help="Value threshold for equalization.")
@@ -117,15 +114,19 @@ if __name__ == "__main__":
     try:
         with open(args.config, "r") as file:
             config = yaml.safe_load(file)
-            input_model_subpath=config["input_model_path"] 
-            dataset_subpath=config["dataset_path"] 
-            output_subpath=config["output_path"] 
-            input_model_path=os.path.join(args.working_dir,input_model_subpath)
-            dataset_path=os.path.join(args.working_dir,dataset_subpath)
-            output_path=os.path.join(args.working_dir,output_subpath)
-            config["input_model_path"]=input_model_path
-            config["dataset_path"]=dataset_path
-            config["output_path"]=output_path
+            input_model_subpath = config["input_model_path"]
+            dataset_subpath = config["dataset_path"]
+            output_subpath = config["output_path"]
+            input_model_path = os.path.join(args.working_dir, input_model_subpath)
+            dataset_path = os.path.join(args.working_dir, dataset_subpath)
+            output_path = os.path.join(args.working_dir, output_subpath)
+            config["input_model_path"] = input_model_path
+            config["dataset_path"] = dataset_path
+            config["output_path"] = output_path
+            _topk = config.get("topk", 1)
+            topk = tuple(
+                map(int, _topk if isinstance(_topk, (list, tuple)) else (_topk,))
+            )
         print("Configuration:", json.dumps(config, sort_keys=True, indent=4))
     except Exception as e:
         # If the configuration file is not found or invalid, print an error message and exit
@@ -133,23 +134,23 @@ if __name__ == "__main__":
         print(e)
         exit(1)
 
-    # BATCH_SIZE = config["batch_size"]
+
     BATCH_SIZE = config["batch_size"]
     # DEVICE = "cpu"  #  'cuda' or 'cpu', if you use cuda, please make sure that cuda is available
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu" # Issues with inconsistent device types
+    DEVICE = ("cuda" if torch.cuda.is_available() else "cpu")  # Issues with inconsistent device types
     TARGET = "esp32s3"
     NUM_OF_BITS = 8 # 8-bit quantization
-    TORCH_PATH = config["input_model_path"]    
+    TORCH_PATH = config["input_model_path"]
     ESPDL_MODLE_PATH = config["output_path"] + config["model_name"] + "_" + str(args.opt_level) + "_" + str(args.iterations) + "_" + str(args.value_threshold) + ".espdl"
     CALIB_DIR = config["dataset_path"] + "train"
+    print(f"Calibration Dataset Directory: {CALIB_DIR}")
     TEST_DIR = config["dataset_path"] + "test"
 
     if "img_height" in config:
         IMAGE_HEIGHT = config["img_height"]
     else:
         IMAGE_HEIGHT = 224
-    print("Image Height: ")
-    print(IMAGE_HEIGHT)
+    print(f"Image Height: {IMAGE_HEIGHT}")
 
     if "img_width" in config:
         IMAGE_WIDTH = config["img_width"]
@@ -158,95 +159,87 @@ if __name__ == "__main__":
 
     INPUT_SHAPE = [3, IMAGE_HEIGHT, IMAGE_WIDTH] # Torch format
 
-
-
     # -------------------------------------------
     # Prepare Calibration Dataset
     # --------------------------------------------
     if os.path.exists(CALIB_DIR):
-        print(f"load imagenet calibration dataset from directory: {CALIB_DIR}")
+        print(f"load calibration dataset from directory: {CALIB_DIR}")
         dataset = datasets.ImageFolder(
             CALIB_DIR,
-            transforms.Compose(
-                [
-                    transforms.Resize((IMAGE_HEIGHT,IMAGE_WIDTH)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # Normalize to [-1, 1]
-                ]
-            ),
+            transforms.Compose([
+                transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), # Normalize to [-1, 1]
+            ]),
         )
         dataset = Subset(dataset, indices=[_ for _ in range(0, 1024)])
         dataloader = DataLoader(
             dataset=dataset,
             batch_size=BATCH_SIZE,
             shuffle=False,
-            num_workers=4,
+            num_workers=config.get("num_workers", 4),
             pin_memory=False,
             collate_fn=collate_fn1,
         )
     else:
-        raise ValueError(
-                "Please provide valid calibration dataset path"
-            )
-        
+        raise ValueError("Please provide valid calibration dataset path")
+
     if os.path.exists(TEST_DIR):
-        print(f"load imagenet testing dataset from directory: {TEST_DIR}")
+        print(f"load testing dataset from directory: {TEST_DIR}")
         test_dataset = datasets.ImageFolder(
             TEST_DIR,
-            transforms.Compose(
-                [
-                    transforms.Resize((IMAGE_HEIGHT,IMAGE_WIDTH)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # Normalize to [-1, 1]
-                ]
-            ),
+            transforms.Compose([
+                transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),  # Normalize to [-1, 1]
+            ]),
         )
         test_dataloader = DataLoader(
             dataset=test_dataset,
             batch_size=BATCH_SIZE,
             shuffle=False,
-            num_workers=4,
+            num_workers=config.get("num_workers", 4),
             pin_memory=False,
             drop_last=True,  # The onnx model does not support dynamic batchsize, and the data size of the last batch may not be aligned, so the last batch of data is discarded
         )
     else:
-        raise ValueError(
-                "Please provide valid testing dataset path"
-            )
+        raise ValueError("Provide valid testing dataset path")
+
+    # -------------------------------------------
+    # Prepare Top-k Accuracy Setting
+    # --------------------------------------------
+
+    num_classes = len(test_dataset.classes)
+    # Define top-k accuracy and precision tag
+    # raise warning if one of topk values exceed num_classes and throw it away
+    topk_acc = tuple([k for k in topk if k <= num_classes])
+    if len(topk_acc) < len(topk):
+        print(f"Warning: Some values in topk_acc {topk} exceed the number of classes {num_classes} and will be ignored.")
+    if len(topk_acc) == 0:
+        raise ValueError(f"All values in topk_acc {topk} exceed the number of classes {num_classes}. Please provide valid topk_acc values.")
 
     # -------------------------------------------
     # Load Model
     # --------------------------------------------
-    
+
     model = torch.load(TORCH_PATH)
-    # torch_model = torch_model.to(DEVICE)
-    
+    # Make sure to remove DataParallel wrapper if present
+    model = model.module if isinstance(model, torch.nn.DataParallel) else model
+
     # -------------------------------------------
     # Set Quantization Setting
     # --------------------------------------------
-    
-    quant_setting = set_quant_settings(
-        config["quant_config"]
-    )
-    
+
+    quant_setting = set_quant_settings(config["quant_config"])
+
     # -------------------------------------------
     # Evaluate Original Model
     # --------------------------------------------
-    
-    my_model = model.module if isinstance(model, torch.nn.DataParallel) else model
-    my_model.eval() # Set the model to evaluation mode
-    
-    # Freeze the model parameters
-    for param in my_model.parameters():
-        param.requires_grad = False
-    
-    # Save the model 
-    # torch.save(my_model, config["output_path"] + config["model_name"] + "_" + str(args.opt_level) + "_" + str(args.iterations) + "_" + str(args.value_threshold) + ".pth")
 
     # Evaluate the model
     test = evaluate_torch_module_with_imagenet(
-        model=my_model,
-        batchsize= BATCH_SIZE,
+        model=model,
+        batchsize=BATCH_SIZE,
         device=DEVICE,
         imagenet_validation_loader=test_dataloader,
         verbose=True,
@@ -254,14 +247,15 @@ if __name__ == "__main__":
         img_width=IMAGE_WIDTH,
         print_confusion_matrix=True,
         confusion_matrix_path=config["output_path"] + config["model_name"] + "_before_quantization_confusion_matrix.png",
+        topk=topk_acc,
     )
 
     # -------------------------------------------
     # Quantize Model
     # --------------------------------------------
-    
+
     quant_ppq_graph = espdl_quantize_torch(
-        model=my_model,
+        model=model,
         espdl_export_file=ESPDL_MODLE_PATH,
         calib_dataloader=dataloader,
         calib_steps=32,
@@ -291,19 +285,17 @@ if __name__ == "__main__":
         img_height=IMAGE_HEIGHT,
         img_width=IMAGE_WIDTH,
         confusion_matrix_path=config["output_path"] + config["model_name"] + "_" + str(args.opt_level) + "_" + str(args.iterations) + "_" + str(args.value_threshold) + "_confusion_matrix.png",
+        topk=topk_acc,
     )
 
-    top1_test=sum(test["top1_accuracy"]) / len(test["top1_accuracy"])
-    top5_test=sum(test["top5_accuracy"]) / len(test["top5_accuracy"])
-    top1_quant=sum(quant_test["top1_accuracy"]) / len(quant_test["top1_accuracy"])
-    top5_quant=sum(quant_test["top5_accuracy"]) / len(quant_test["top5_accuracy"])
+    results = {}
+    for k in topk_acc:
+        prec_tag = f"top{k}_accuracy"
+        results[prec_tag + "_test"] = [sum(test[prec_tag]) / len(test[prec_tag])]
+        results[prec_tag + "_test_quant"] = [sum(quant_test[prec_tag]) / len(quant_test[prec_tag])]
+        print(f"{prec_tag} before quantization: {results[prec_tag+'_test'][0]:.2f}%")
+        print(f"{prec_tag} after quantization: {results[prec_tag+'_test_quant'][0]:.2f}%")
 
-    # Concatente the results and export to a csv file
-    results = {
-        "top1_test": [top1_test],
-        "top5_test": [top5_test],
-        "top1_test_quant": [top1_quant],
-        "top5_test_quant": [top5_quant],
-    }
+    # concatente the results and export to a csv file
     results_df = pd.DataFrame(results)
     results_df.to_csv(config["output_path"] + config["model_name"] + "_quant-metrics.csv", index=False)
