@@ -27,8 +27,10 @@ class ModelFactory:
 
         if self.model_type == "shufflenet":
             model = self._create_shufflenet(num_classes, self.weights_path)
-        elif self.model_type == "mobilenet":
-            model = self._create_mobilenet(num_classes, self.weights_path)
+        elif self.model_type == "mobilenetv2":
+            model = self._create_mobilenetv2(num_classes, self.weights_path)
+        elif self.model_type == "mobilenetv3":
+            model = self._create_mobilenetv3(num_classes, self.weights_path)
         elif self.model_type == "efficientnet":
             model = self._create_efficientnet_v2_s(num_classes, self.weights_path)
         elif self.model_type == "efficientnet_b0":
@@ -73,7 +75,7 @@ class ModelFactory:
             torch.load(weights_path, map_location="cpu")
         return model
 
-    def _create_mobilenet(self, num_classes, weights_path):
+    def _create_mobilenetv2(self, num_classes, weights_path):
         """Create MobileNet V2 model
         Hint: Relaces ReLU6 with ReLU for better compatibility.
         Args:
@@ -83,6 +85,23 @@ class ModelFactory:
         """
         model = torchvision.models.mobilenet_v2(weights="DEFAULT")
         model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+
+        # Convert ReLU6 to ReLU for better compatibility
+        model = self._convert_relu6_to_relu(model)
+        if weights_path is not None:
+            torch.load(weights_path, map_location="cpu")
+        return model
+
+    def _create_mobilenetv3(self, num_classes, weights_path):
+        """Create MobileNet V3 S model
+        Hint: Relaces ReLU6 with ReLU for better compatibility.
+        Args:
+            num_classes (int): Number of output classes for the model
+        Returns:
+            model (torch.nn.Module): MobileNet V3 model with modified classifier
+        """
+        model = torchvision.models.mobilenet_v3_small(weights="DEFAULT")
+        model.classifier[3] = nn.Linear(model.classifier[3].in_features, num_classes)
 
         # Convert ReLU6 to ReLU for better compatibility
         model = self._convert_relu6_to_relu(model)
