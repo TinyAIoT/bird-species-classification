@@ -62,7 +62,8 @@ class DatasetHandler:
                     degrees = t["rotate"].get("degrees", 0)
                     dataset_transforms.append(L(lambda img: F.rotate(img, degrees)))
                 if "RandomHorizontalFlip" in t:
-                    p = t["propability"]
+                    params = t["RandomHorizontalFlip"]
+                    p = params["probability"]
                     dataset_transforms.append(transforms.RandomHorizontalFlip(p=p))
                 if "crop_relative" in t:
                     params = t["crop_relative"]

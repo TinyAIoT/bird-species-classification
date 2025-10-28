@@ -19,7 +19,7 @@ datasets: # List of datasets to be used for training
             # scale (tuple of floats) – Range of scale for the crop.
       
       # Horizontal flip using torchvision.transforms.RandomHorizontalFlip
-      - RandomHorizontalFlip : {propability: 0.5}
+      - RandomHorizontalFlip : {probability: 0.5}
 
       # Changes in image using torchvision.transforms.ColorJitter
       - ColorJitter : {brightness: 0.2, contrast: 0.2, saturation: 0.2, hue: 0.1}
