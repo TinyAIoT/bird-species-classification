@@ -15,14 +15,13 @@ pip install --user -r $HOME/BirdBox/requirements.txt
 
 # Project paths
 CODE="$HOME/BirdBox/data"
-DATA="$WORK/BirdBox/data/v1"
+DATA="$WORK/BirdBox/data/filter-dataset"
 
 # Run training
 python "$CODE/data_cleaner.py" train \
   --workdir "$DATA" \
-  --batch-size 64 \
   --workers 8 \
-  --epochs 10 \
+  --epochs 50 \
   --log-every 100
 
 echo "end of Training for Job "$SLURM_JOB_ID" :"
