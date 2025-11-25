@@ -1,0 +1,9 @@
+# Config for Squeezenet model compression calibrated on birdiary dataset
+batch_size: 32
+img_height: 224
+img_width: 224
+input_model_path: model/results/birdiary_v5_squeeze/birdiary_v5_squeeze_fine_tuning.pth
+dataset_path: data/v5/dataset/
+output_path: model/results/birdiary_v5_squeeze/compression/
+model_name: birdiary_v5_squeezenet_none
+quant_config: None # [None, "LayerwiseEqualization_quantization", "MixedPrecision_quantization"]

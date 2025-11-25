@@ -1,4 +1,4 @@
-# Config for SqueezeNet model compression calibrated on birdiary dataset
+# Config for Squeezenet model compression calibrated on birdiary dataset
 batch_size: 32
 img_height: 224
 img_width: 224
