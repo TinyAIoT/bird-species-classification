@@ -1,7 +1,7 @@
 import os
 
 # Path to your classes directory
-classes_dir = "data/full_data/classes"
+classes_dir = "data/v5/dataset/train"
 output_header = "bird_category_name.hpp"
 
 # Read and sort class folder names
@@ -12,7 +12,7 @@ class_names = sorted([
 
 # Generate C++ array string
 header_guard = "#pragma once\n"
-array_name = "static const char *bird_cat_names[] = {\n"
+array_name = "static const char *classification_cat_names[] = {\n"
 entries = [f'    "{name}",' for name in class_names]
 array_end = "\n};\n"
 

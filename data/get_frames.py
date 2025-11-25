@@ -6,6 +6,8 @@ import cv2
 import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+import numpy as np
+
 
 def collect_videos(video_base_dir):
     """Collect all videos grouped by species."""
@@ -34,23 +36,24 @@ def split_videos(splits, videos):
     }
 
 
-def extract_frames(split_map, workdir, frame_rate, workers):
+def extract_frames(split_map, workdir, frame_rate, diff_threshold, frac_change, workers):
     """Run frame extraction in parallel."""
     futures = []
     with ProcessPoolExecutor(max_workers=workers) as ex:
         for split, vid_list in split_map.items():
             for species, video_path in vid_list:
-                futures.append(ex.submit(process_video, str(video_path), split, species, workdir, frame_rate))
+                futures.append(ex.submit(process_video, str(video_path), split, species, workdir, frame_rate, diff_threshold, frac_change))
 
         for fut in as_completed(futures):
-            video_path, saved_count = fut.result()
+            video_path, saved_count, skipped= fut.result()
             if saved_count > 0:
-                print(f"[OK] Extracted {saved_count} frames from {Path(video_path).relative_to(workdir)}.")
+                print(f"[OK] Extracted {saved_count} frames from {Path(video_path).relative_to(workdir / 'videos')}. Skipped {skipped}")
+                continue
             else:
                 print(f"[ERROR] Could not open {video_path}.")
 
 
-def process_video(video_path, split, species, workdir, frame_rate):
+def process_video(video_path, split, species, workdir, frame_rate, diff_threshold, frac_change):
     """Extract frames from one video into dataset/<split>/<species> and full_dataset/<species>."""
     try:
         cv2.setNumThreads(1) # keep OpenCV single-threaded inside each process
@@ -76,31 +79,74 @@ def process_video(video_path, split, species, workdir, frame_rate):
 
     frame_idx = 0
     saved_count = 0
+    skip_count = 0
+    frac_skip_count = 0
+    mean_diff_skip_count = 0
+    prev_img_avg = None
+
     while True:
         # Read next frame from video
         ret, frame = cap.read()
         if not ret:
             break
+
         if frame_idx % frame_interval == 0:
+            #img_avg = frame
+            img_avg = cv2.GaussianBlur(frame, (3, 3), 0)  # To cancel out changes due to noise in images
+            if img_avg.mean() < 20 or img_avg.mean() > 235 or img_avg.std() < 50:
+                # Skip almost white/black frames and very low contrast images
+                if img_avg.std() < 20:
+                    # For debugging
+                    filename = f"{Path(video_path).stem}_{saved_count:03d}.jpg"
+                    cv2.imwrite(str(filename), frame)
+                
+                skip_count += 1
+                frame_idx += 1
+                continue
+
+            if prev_img_avg is not None:
+                # Mean absolute pixel difference
+                diff = cv2.absdiff(img_avg, prev_img_avg)
+                mean_diff = diff.mean()
+
+                # Count fraction of pixels that differ by more than 10 intensity levels
+                grey_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+                changed = np.sum(grey_diff > 10)
+                fraction_changed = changed / grey_diff.size
+
+                if fraction_changed < frac_change:
+                    # Skip frame — not enough pixel level changes
+                    frame_idx += 1
+                    frac_skip_count += 1
+                    continue
+
+                if mean_diff < diff_threshold:
+                    # Skip frame — too similar to previous
+                    frame_idx += 1
+                    mean_diff_skip_count += 1
+                    continue
+
+            # Save current frame (two copies)
             filename = f"{Path(video_path).stem}_{saved_count:03d}.jpg"
-            # Save twice: once into a split and once to full dataset
             cv2.imwrite(str(dataset_dir / filename), frame)
             cv2.imwrite(str(full_dataset_dir / filename), frame)
             saved_count += 1
+            prev_img_avg = img_avg  
+
         frame_idx += 1
 
-    cap.release()
-    return (str(video_path), saved_count)
+    cap.release()   
+    return (str(video_path), saved_count, (frac_skip_count, mean_diff_skip_count, skip_count))
 
 
 def main():
     parser = argparse.ArgumentParser(description="Split videos into frames.")
     parser.add_argument("--workdir", type=str, default="./", help="Path to local data directory.")
     parser.add_argument("--frame-rate", type=float, default=5, help="Number of frames-per-second to capture.")
+    parser.add_argument("--diff-threshold", type=float, default=20, help="Threshold for image similarity (change in avg channel intensity).")
+    parser.add_argument("--frac-change", type=float, default=0.2, help="Fraction of changed pixels between images.")
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 4, help="Number of parallel worker processes.")
-    parser.add_argument("--train", type=float, default=0.7, help="Proportion for training set.")
-    parser.add_argument("--val", type=float, default=0.2, help="Proportion for validation set.")
-    parser.add_argument("--test", type=float, default=0.1, help="Proportion for test set.")
+    parser.add_argument("--split", type=float, nargs=3, metavar=("TRAIN", "VAL", "TEST"), default=[0.7, 0.2, 0.1], help="Train, val, and test split proportions (must sum to 1.0)")
     args = parser.parse_args()
 
     workdir = Path(args.workdir).expanduser().resolve()
@@ -109,9 +155,10 @@ def main():
     # Input and output base directories
     video_base_dir = workdir / "videos"
 
-    splits = {"train": args.train, "val": args.val, "test": args.test}
-    if abs(sum(splits.values()) - 1.0) > 1e-6:
+    train, val, test = args.split
+    if abs(sum(args.split) - 1.0) > 1e-6:
         raise ValueError("Train/val/test proportions must sum to 1.")
+    splits = {"train": train, "val": val, "test": test}
     
     videos = collect_videos(video_base_dir)
     if not videos:
@@ -121,7 +168,7 @@ def main():
     print(f"[INFO] Total videos: {len(videos)}\t(train={len(split_map['train'])}, "
           f"val={len(split_map['val'])}, test={len(split_map['test'])})")
     
-    extract_frames(split_map, workdir, args.frame_rate, args.workers)
+    extract_frames(split_map, workdir, args.frame_rate, args.diff_threshold, args.frac_change, args.workers)
 
 
 if __name__ == "__main__":
