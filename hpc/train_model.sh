@@ -44,6 +44,6 @@ wd="$WORK"/BirdBox
 
 # run code with flags
 # run sbatch with flag --config path/to/config.yaml
-python "$code"/model/training/run_transfer_learning_pipeline.py --working_dir $wd --config "$code/model/training/configs/birdiary_v2.yaml"
+python "$code"/model/training/run_transfer_learning_pipeline.py --working_dir $wd --config "$code/model/training/configs/birdiary_v5.yaml"
 echo "end of Training for Job "$SLURM_JOB_ID" :"
 echo `date +%Y.%m.%d-%H:%M:%S`
