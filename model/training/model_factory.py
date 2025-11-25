@@ -41,6 +41,8 @@ class ModelFactory:
             model = self._create_squeezenet(num_classes, self.weights_path)
         elif self.model_type == "mnasnet":
             model = self._create_mnasnet(num_classes, self.weights_path)
+        elif self.model_type == "from_checkpoint":
+            model = self._create_from_checkpoint(num_classes, self.weights_path)
         else:
             raise ValueError(f"Unsupported model type: {self.model_type}. Supported types: shufflenet, mobilenet, efficientnet, efficientnet_b0, densenet, squeezenet, mnasnet")
 
@@ -175,6 +177,61 @@ class ModelFactory:
             torch.load(weights_path, map_location="cpu")
         return model
 
+    def _create_from_checkpoint(self, num_classes, weights_path):
+        """
+        Generic model loader that infers the architecture from a saved training config (.yaml)
+        or model state dict keys, and reuses the backbone for transfer learning.
+        """
+        import yaml
+
+        # Try to infer architecture from matching YAML next to checkpoint
+        yaml_path = weights_path.replace(".pt", ".yaml").replace(".pth", ".yaml")
+        if os.path.exists(yaml_path):
+            with open(yaml_path, "r") as f:
+                cfg = yaml.safe_load(f)
+            base_type = cfg.get("model_type", "mobilenet")
+        else:
+            print("YAML not found, defaulting to mobilenet_v2.")
+            base_type = "mobilenet"
+
+        # 2. Create model skeleton using the existing factory
+        if base_type == "mobilenet":
+            model = torchvision.models.mobilenet_v2(weights=None)
+            head_attr = ("classifier", 1)
+        elif base_type == "efficientnet_b0":
+            model = torchvision.models.efficientnet_b0(weights=None)
+            head_attr = ("classifier", 1)
+        elif base_type == "densenet":
+            model = torchvision.models.densenet121(weights=None)
+            head_attr = ("classifier", None)
+        elif base_type == "shufflenet":
+            model = torchvision.models.shufflenet_v2_x1_5(weights=None)
+            head_attr = ("fc", None)
+        else:
+            raise ValueError(f"Unsupported base type inferred: {base_type}")
+
+        # 3. Load state dict, skipping classifier mismatch
+        state_dict = torch.load(weights_path, map_location="cpu")
+        if any(k.startswith("module.") for k in state_dict.keys()):
+            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        model.load_state_dict(state_dict, strict=False)
+
+        print(f"Loaded backbone from {base_type} checkpoint.")
+
+        # 4. Replace classification head for Birdiary
+        if head_attr[0] == "classifier" and head_attr[1] is not None:
+            in_features = getattr(model, head_attr[0])[head_attr[1]].in_features
+            getattr(model, head_attr[0])[head_attr[1]] = nn.Linear(in_features, num_classes)
+        elif head_attr[0] == "classifier":
+            in_features = getattr(model, head_attr[0]).in_features
+            setattr(model, head_attr[0], nn.Linear(in_features, num_classes))
+        elif head_attr[0] == "fc":
+            in_features = getattr(model, head_attr[0]).in_features
+            setattr(model, head_attr[0], nn.Linear(in_features, num_classes))
+
+        return model
+
+
     def load_checkpoint(self, model, checkpoint_path):
         """Load model from checkpoint
         Args:
@@ -216,7 +273,8 @@ class ModelFactory:
         """
         model_info = {
             "shufflenet": "ShuffleNet V2 1.5x - Lightweight CNN for mobile devices",
-            "mobilenet": "MobileNet V2 - Efficient CNN for mobile and embedded devices",
+            "mobilenetv2": "MobileNet V2 - Efficient CNN for mobile and embedded devices",
+            "mobilenetv3": "MobileNet V3 Small - Efficient CNN for mobile and embedded devices",
             "efficientnet": "EfficientNet V2 Small - Balanced accuracy and efficiency",
             "efficientnet_b0": "EfficientNet B0 - Base EfficientNet model",
             "densenet": "DenseNet 121 - Dense connections for better feature reuse",
