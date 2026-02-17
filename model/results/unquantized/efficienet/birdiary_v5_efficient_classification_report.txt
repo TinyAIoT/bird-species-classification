@@ -1,0 +1,29 @@
+
+            # Model Classification Report
+
+                                precision    recall  f1-score   support
+
+                   background       0.99      0.99      0.99      1029
+          carduelis_carduelis       0.98      0.98      0.98       293
+              chloris_chloris       0.96      0.96      0.96       490
+coccothraustes_coccothraustes       0.96      0.97      0.96       199
+          cyanistes_caeruleus       0.78      0.96      0.86       212
+            dendrocopos_major       0.95      0.95      0.95       173
+           erithacus_rubecula       0.95      0.91      0.93       288
+            fringilla_coelebs       0.98      0.99      0.99       181
+          garrulus_glandarius       0.99      1.00      1.00       211
+                 homo_sapiens       1.00      0.70      0.83        27
+                  parus_major       0.98      0.88      0.93       536
+            passer_domesticus       0.94      0.97      0.96       567
+            poecile_palustris       0.83      0.86      0.84        79
+           prunella_modularis       0.86      0.82      0.84       106
+            pyrrhula_pyrrhula       0.95      0.93      0.94        61
+               sitta_europaea       0.90      0.99      0.94       162
+             sturnus_vulgaris       1.00      0.98      0.99        48
+                turdus_merula       0.99      0.96      0.97       243
+
+                     accuracy                           0.96      4905
+                    macro avg       0.94      0.93      0.94      4905
+                 weighted avg       0.96      0.96      0.96      4905
+
+        

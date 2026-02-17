@@ -1,0 +1,2 @@
+best_train_accuracy,best_val_accuracy,test_accuracy,precision,recall,f1
+0.989739,0.916291,0.929052,0.929052,0.929052,0.929052

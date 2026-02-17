@@ -1,0 +1,21 @@
+
+            # Complete Transfer Learning Pipeline Report
+
+            ## Model Information
+            - Model Name: birdiary_v5_squeeze
+            - Model Type: SqueezeNet 1.1 - Very lightweight CNN
+            - Classes: ['background', 'carduelis_carduelis', 'chloris_chloris', 'coccothraustes_coccothraustes', 'cyanistes_caeruleus', 'dendrocopos_major', 'erithacus_rubecula', 'fringilla_coelebs', 'garrulus_glandarius', 'homo_sapiens', 'parus_major', 'passer_domesticus', 'poecile_palustris', 'prunella_modularis', 'pyrrhula_pyrrhula', 'sitta_europaea', 'sturnus_vulgaris', 'turdus_merula']
+
+            ## Final Results
+            - Test Loss: 0.2808
+            - Test Accuracy: 0.9266 (92.66%)
+            - Precision: 0.9266
+            - Recall: 0.9266
+            - F1 Score: 0.9266
+
+            ## Dataset Information
+            - Number of Classes: 18
+            - Class Names: ['background', 'carduelis_carduelis', 'chloris_chloris', 'coccothraustes_coccothraustes', 'cyanistes_caeruleus', 'dendrocopos_major', 'erithacus_rubecula', 'fringilla_coelebs', 'garrulus_glandarius', 'homo_sapiens', 'parus_major', 'passer_domesticus', 'poecile_palustris', 'prunella_modularis', 'pyrrhula_pyrrhula', 'sitta_europaea', 'sturnus_vulgaris', 'turdus_merula']
+            - Train/Val/Test sizes: 32160/9091/4905
+            - Device Used: cuda
+        
