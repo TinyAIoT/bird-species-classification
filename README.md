@@ -1,2 +1,3 @@
-# bird-species-classification
-ML Model, Data Acquisition etc for Master Thesis
+# TinyML for Environmental Monitoring
+## Bird Species Image Recognition on Resource-Constrained Devices
+
