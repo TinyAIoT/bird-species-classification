@@ -10,14 +10,13 @@
 #SBATCH --time=0-02:00:00
 #SBATCH --job-name=train_cub
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=akurkela@uni-muenster.de
 #SBATCH --output /scratch/tmp/%u/BirdBox/tmp/training/train_CUB_%j.log
 
 #load modules 
 module purge
 # PyTorch/2.1.2-CUDA-12.1.1 
-module load palma/2023a foss/2023a scikit-learn/1.3.1 matplotlib/3.7.2 
-# module load palma/2021a foss/2021a torchvision/0.11.1-CUDA-11.3.1  ONNX-Runtime/1.10.0-CUDA-11.3.1 scikit-learn/0.24.2 matplotlib/3.4.2
+module load foss/2023a scikit-learn/1.3.1 matplotlib/3.7.2 
+# module load foss/2021a torchvision/0.11.1-CUDA-11.3.1  ONNX-Runtime/1.10.0-CUDA-11.3.1 scikit-learn/0.24.2 matplotlib/3.4.2
 # pip install --user matplotlib
 pip install --user pyyaml
 pip uninstall torch torchvision torchaudio -y
@@ -38,7 +37,7 @@ pip install --user seaborn
 # For debugging use: 
 # pip install torchprofile 
 
-# place of code in palma
+# place of code
 code="$HOME"/BirdBox
 wd="$WORK"/BirdBox
 

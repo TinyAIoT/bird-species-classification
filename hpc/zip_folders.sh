@@ -8,7 +8,6 @@
 #SBATCH --time=0-02:00:00
 #SBATCH --job-name=zip_birds_ds
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=akurkela@uni-muenster.de
 #SBATCH --output /scratch/tmp/%u/BirdBox/tmp/zip_folders_dss%j.log
 
 wd="$WORK"/BirdBox/data/

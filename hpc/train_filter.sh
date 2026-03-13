@@ -9,7 +9,6 @@
 #SBATCH --output=/scratch/tmp/%u/BirdBox/tmp/train_%j.log
 #SBATCH --job-name=TrainFilter
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=akurkela@uni-muenster.de
 
 pip install --user -r $HOME/BirdBox/requirements.txt
 

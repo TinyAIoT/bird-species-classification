@@ -8,7 +8,6 @@
 #SBATCH --time=0-02:00:00            # d-hh:mm:ss
 #SBATCH --output=/scratch/tmp/%u/BirdBox/tmp/get_frames_split_ds_%j.log
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=akurkela@uni-muenster.de
 
 pip install --user -r $HOME/BirdBox/requirements.txt
 

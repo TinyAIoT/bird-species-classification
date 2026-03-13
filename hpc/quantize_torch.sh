@@ -23,7 +23,6 @@
 
 #load modules 
 module purge
-ml palma/2023a 
 ml foss/2023a 
 ml PyTorch/2.1.2-CUDA-12.1.1
 ml scikit-learn/1.3.1
@@ -34,7 +33,7 @@ pip install --user seaborn
 pip install --user onnxruntime 
 pip install --user esp-ppq
 
-# place of code in palma
+# place of code
 home="$HOME"
 wd="$WORK"/BirdBox
 code="$HOME"/BirdBox
