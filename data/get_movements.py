@@ -141,6 +141,7 @@ def main():
     if not stations_csv.exists():
         raise FileNotFoundError(f"Missing {stations_csv}!")
     stations_df = pd.read_csv(stations_csv)
+    # stations_df = pd.read_csv(stations_csv, sep=";", dtype={"station_id": str, "name": str})
 
     # Path for collected data
     output_csv_path = workdir / "movements.csv"
@@ -160,7 +161,7 @@ def main():
             num_movs = process_station(session, row, args.validated_only, output_csv_path, args.number_movements)
             sum_movs += num_movs
             # Delay between stations
-            # time.sleep(random.uniform(1.0, 2.5))
+            time.sleep(random.uniform(1.0, 2.5))
 
     print(f"[OK] Saved total {sum_movs} movements to {output_csv_path}")
 

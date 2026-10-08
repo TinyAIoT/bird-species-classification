@@ -11,6 +11,7 @@ from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from PIL import Image
 from torchvision import transforms, models
+from tqdm import tqdm
 
 
 # ---- Data --------------------------------------------------------------------
@@ -186,6 +187,9 @@ def train_model(args):
 
     timestamp = datetime.now().strftime("%m%d_%H%M")
     best_acc = -1.0
+    best_val_loss = float("inf")
+    epochs_without_improvement = 0
+    early_stopping_patience = 5
 
     epochs = args.epochs
     for epoch in range(epochs):
@@ -193,7 +197,8 @@ def train_model(args):
         # train
         model.train()
         running_loss = 0.0
-        for bidx, (x, y) in enumerate(train_loader, 1):
+        train_pbar = tqdm(train_loader, total=len(train_loader), desc="  [TRAIN]", leave=False)
+        for bidx, (x, y) in enumerate(train_pbar, 1):
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
@@ -203,6 +208,7 @@ def train_model(args):
             optimizer.step()
 
             running_loss += loss.item()
+            train_pbar.set_postfix(loss=f"{loss.item():.4f}")
             if bidx % max(1, args.log_every) == 0 or bidx == len(train_loader):
                 print(f"  [TRAIN] Batch {bidx}/{len(train_loader)} Loss: {loss.item():.4f}")
 
@@ -211,24 +217,61 @@ def train_model(args):
 
         # val
         model.eval()
+        val_loss_sum = 0.0
         correct = 0
         total = 0
+        class_names = [IDX_TO_CLASS[i] for i in sorted(IDX_TO_CLASS)]
+        class_correct = [0] * len(class_names)
+        class_total = [0] * len(class_names)
         with torch.no_grad():
-            for x, y in val_loader:
+            # over all batches in val_loader
+            val_pbar = tqdm(val_loader, total=len(val_loader), desc="  [VAL]", leave=False)
+            for x, y in val_pbar:
                 x = x.to(device, non_blocking=True)
                 y = y.to(device, non_blocking=True)
                 out = model(x)
+                batch_val_loss = criterion(out, y).item()
+                val_loss_sum += batch_val_loss
+                val_pbar.set_postfix(loss=f"{batch_val_loss:.4f}")
                 pred = out.argmax(1)
                 total += y.size(0)
                 correct += (pred == y).sum().item()
+
+                for class_idx in range(len(class_names)):
+                    class_total[class_idx] += (y == class_idx).sum().item()
+                    class_correct[class_idx] += ((pred == y) & (y == class_idx)).sum().item()
+
+        avg_val_loss = val_loss_sum / max(1, len(val_loader))
+        print(f"  [VAL] Loss: {avg_val_loss:.4f}")
         acc = 100.0 * correct / max(1, total)
         print(f"  [VAL] Accuracy: {acc:.2f}%")
+        print("  [VAL] Accuracy by class:")
+        for class_idx, class_name in enumerate(class_names):
+            class_acc = 100.0 * class_correct[class_idx] / max(1, class_total[class_idx])
+            print(
+                f"    - {class_name}: {class_acc:.2f}% "
+                f"({class_correct[class_idx]}/{class_total[class_idx]})"
+            )
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+            print(
+                f"  [EARLY-STOP] No val loss improvement for "
+                f"{epochs_without_improvement}/{early_stopping_patience} epoch(s)"
+            )
 
         if acc > best_acc:
             best_acc = acc
             out_path = path / f"acc{acc:.2f}_e{epoch+1}_bird_filter_{timestamp}.pth"
             torch.save(model.state_dict(), out_path)
             print(f"  [SAVED] Model saved as {out_path.relative_to(path)}")
+
+        if epochs_without_improvement >= early_stopping_patience:
+            print("  [EARLY-STOP] Stopping training.")
+            break
 
 
 # ---- Inference / Filtering ----------------------------------------------------

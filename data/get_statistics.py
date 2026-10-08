@@ -8,7 +8,7 @@ import pandas as pd
 BASE_URL = "https://wiediversistmeingarten.org/api"
 
 
-def fetch_with_retries(session, url, max_retries=5, base_delay=1):
+def fetch_with_retries(session, url, max_retries=1, base_delay=1):
     """Fetch with retries using an existing session."""
     for attempt in range(max_retries):
         try:
@@ -25,7 +25,11 @@ def fetch_with_retries(session, url, max_retries=5, base_delay=1):
 
 def process_station_statistics(session, row):
     """Fetch /statistics/{station_id} and return a flat dict for CSV."""
-    station_id = row["station_id"]
+    #print keys of row to verify columns
+    print(f"[INFO] Processing station row: {row.to_dict()}")
+
+    station_id = row.get("station_id")
+    print(station_id)
     station_name = str(row.get("name", station_id))
 
     stats_url = f"{BASE_URL}/statistics/{station_id}"
@@ -94,7 +98,10 @@ def main():
     if not stations_csv.exists():
         raise FileNotFoundError(f"Missing {stations_csv}!")
 
-    stations_df = pd.read_csv(stations_csv)
+    stations_df = pd.read_csv(stations_csv, delimiter=";")
+    # print keys of stations_df to verify columns
+    print(f"[INFO] Loaded {len(stations_df)} stations from {stations_csv}")
+    print(f"[INFO] Station columns: {list(stations_df.columns)}")
 
     output_csv_path = workdir / args.output
 
