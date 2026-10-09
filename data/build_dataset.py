@@ -4,7 +4,7 @@ Steps (all cached in --workdir, so the script can be re-run or resumed after a c
   metadata  fetch stations and validated movements                      -> stations.csv, movements.csv
   split     clean labels, build class map, cap per station, split, select -> class_map.csv, videos_split.csv, selected_videos.csv
   download  download the selected videos                                 -> videos/<station>_<mov>.mp4
-  frames    extract frames                                               -> frames/<station>_<mov>/*.jpg
+  frames    extract well exposed, informative, changing frames           -> frames/<station>_<mov>/*.jpg, frame_extraction.csv
   filter    score frames with the background/unclear/bird model          -> frames.csv
   assemble  build dataset/<split>/<class>/ (background as own class)     -> dataset/, rejected/, dataset_manifest.csv
   report    statistics, leakage checks and plots                         -> reports/
@@ -15,6 +15,7 @@ Run only some steps, e.g. on a GPU node:
   python build_dataset.py --workdir data_v7 --steps filter assemble report
 """
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -33,14 +34,25 @@ from tqdm import tqdm
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from get_movements import BASE_URL, process_movements, fetch_with_retries
+
+BASE_URL = "https://wiediversistmeingarten.org/api"
+EXCLUDED_VALIDATIONS = [  # Manually crafted list of existing invalid/incorrect class labels
+    "cyanocitta cristata", "poecile atricapillus", "sitta canadensis", "melospiza lincolnii",
+    "molothrus ater", "thryomanes bewickii", "thryothorus ludovicianus", "poecile carolinensis",
+    "ardea herodias", "anthornis melanura", "hemiphaga novaeseelandiae", "seiurus aurocapilla",
+    "egretta novaehollandiae", "alopochen aegyptiaca", "sitta pygmaea", "hirundo rustica",
+    "corvus corax", "accipiter nisus"
+] # sylvia_atricapilla mostly wrong validated tits (e.g. Poecile palustris)
 
 STEPS = ["metadata", "split", "download", "frames", "filter", "assemble", "report"]
 NON_BIRD_CLASSES = {"homo_sapiens", "sciurus_vulgaris"}  # own class if supported, otherwise dropped
+EXCLUDED_SPECIES = ["sylvia_atricapilla", "periparus_ater"]  # mostly wrong validations, dropped completely (default of --exclude-species)
 UNKNOWN_CLASS = "unknown_bird"
 BACKGROUND_CLASS = "background"
 SPECIES_SYNONYMS = {"corvus_monedula": "coloeus_monedula", "human": "homo_sapiens"}
 PROB_COLS = ["p_background", "p_unclear", "p_bird"]
+SKIP_REASONS = ["dark", "bright", "low_contrast", "low_information", "too_similar"]
+EXTRACTION_PARAMS = ["frame_rate", "min_brightness", "max_brightness", "min_std", "min_entropy", "frac_change", "diff_threshold"]
 
 log = logging.getLogger("build_dataset")
 
@@ -67,6 +79,61 @@ def read_required(path):
 
 
 # ---- Step: metadata ----------------------------------------------------------
+
+def fetch_with_retries(session, url, max_retries=5, base_delay=1):
+    """Fetch with retries, the API is sometimes unresponsive under many requests."""
+    for attempt in range(max_retries):
+        try:
+            response = session.get(url, timeout=15)
+            if response.status_code == 200:
+                return response
+            log.warning(f"Status {response.status_code} for {url}")
+        except requests.exceptions.RequestException as e:
+            log.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
+        time.sleep(base_delay * (2**attempt) + random.uniform(0, 1))
+    return None
+
+
+def process_movements(station_id, mov, validated_only):
+    """Extract the validation(s) and predictions of a movement."""
+    validations = mov.get("validation", {}).get("validations", [])
+    if validated_only and not validations:
+        return None
+
+    names = set()
+    for val in validations:
+        name = val.get("latinName", "").strip().lower()
+        if not name or name == "none":
+            # Videos without a bird not needed
+            continue
+        if val.get("germanName", "") == "" and name != "homo sapiens":
+            # If the german name is empty the latin name contains a non specified species
+            log.debug(f"Skip {station_id}/{mov['mov_id']}, latinName of empty germanName: {name}")
+            continue
+        if name in EXCLUDED_VALIDATIONS or "familie" in name:
+            continue
+        names.add(name)
+
+    if validated_only and not names:
+        return None
+
+    predictions = set()
+    for det in mov.get("detections", {}):
+        name = det.get("latinName", "").strip().lower()
+        score = det.get("score")
+        if name and score is not None:
+            predictions.add((name, round(score, 2)))
+
+    return {
+        "station_id": station_id,
+        "mov_id": mov["mov_id"],
+        "start_date": mov["start_date"],
+        "weight": mov.get("weight", ""),
+        "predictions": "; ".join(str(t) for t in sorted(predictions, key=lambda x: x[1], reverse=True)),
+        "validations": "; ".join(str(t) for t in sorted(names)),
+        "video_link": mov["video"],
+    }
+
 
 def fetch_stations(session):
     response = fetch_with_retries(session, f"{BASE_URL}/station")
@@ -140,8 +207,11 @@ def clean_labels(movements):
     return mov
 
 
-def build_class_map(mov, min_videos, min_stations, max_station_share):
-    """Own class if enough videos/stations and no dominating station, else unknown_bird (birds) or dropped (non-birds)."""
+def build_class_map(mov, min_videos, min_stations, max_station_share, excluded=()):
+    """Own class if enough videos/stations and no dominating station, else unknown_bird (birds) or dropped (non-birds).
+
+    Excluded species are dropped completely, also not merged into unknown_bird, since their labels are unreliable.
+    """
     support = mov.groupby("species").agg(
         videos=("mov_id", "size"),
         stations=("station_id", "nunique"),
@@ -155,6 +225,9 @@ def build_class_map(mov, min_videos, min_stations, max_station_share):
     is_bird = ~support.index.isin(NON_BIRD_CLASSES)
     support["class"] = np.where(supported, support.index, np.where(is_bird, UNKNOWN_CLASS, None))
     support["status"] = np.where(supported, "keep", np.where(is_bird, "unknown", "drop"))
+    is_excluded = support.index.isin(excluded)
+    support.loc[is_excluded, "class"] = None
+    support.loc[is_excluded, "status"] = "excluded"
     return support.sort_values("videos", ascending=False)
 
 
@@ -246,22 +319,21 @@ def round_robin_sample(df, k, seed):
 
 
 def plot_support(support, path):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure  # no pyplot: works headless and doesn't change a notebook's backend
 
-    colors = support["status"].map({"keep": "#2E8B57", "unknown": "#FFA500", "drop": "#B22222"})
-    fig, ax = plt.subplots(figsize=(14, 5))
+    colors = support["status"].map({"keep": "#2E8B57", "unknown": "#FFA500", "drop": "#B22222", "excluded": "#808080"})
+    fig = Figure(figsize=(14, 5))
+    ax = fig.subplots()
     ax.bar(support.index, support["videos"], color=colors)
     ax.set_yscale("log")
     ax.set_ylabel("single-species videos (log)")
-    ax.set_title("Support per species (green: own class, orange: unknown_bird, red: dropped), labels: stations")
+    ax.set_title("Support per species (green: own class, orange: unknown_bird, red: dropped, grey: excluded), "
+                 "labels: stations")
     ax.tick_params(axis="x", rotation=75)
     for x, (_, row) in enumerate(support.iterrows()):
         ax.text(x, row["videos"], str(row["stations"]), ha="center", va="bottom", fontsize=7)
     fig.tight_layout()
     fig.savefig(path, dpi=120)
-    plt.close(fig)
 
 
 def step_split(args):
@@ -269,16 +341,22 @@ def step_split(args):
     reports.mkdir(exist_ok=True)
     mov = clean_labels(read_required(args.workdir / "movements.csv"))
 
+    unknown_names = sorted(set(args.exclude_species) - set(mov["species"]))
+    if unknown_names:
+        log.warning(f"--exclude-species not found in the movements (typo?): {unknown_names}")
+
     # Class map on the full metadata, so a pilot sample gets the same classes as the full dataset
-    support = build_class_map(mov, args.min_videos, args.min_stations, args.max_station_share)
+    support = build_class_map(mov, args.min_videos, args.min_stations, args.max_station_share, args.exclude_species)
     support.to_csv(args.workdir / "class_map.csv")
     plot_support(support, reports / "support_per_species.png")
     log.info("Class map:\n" + support.to_markdown(floatfmt=".2f"))
     mov["class"] = mov["species"].map(support["class"])
     mov = mov[mov["class"].notna()].copy()
     unknown = mov[mov["class"] == UNKNOWN_CLASS]
+    excluded = support[support["status"] == "excluded"]
     log.info(f"{support['status'].eq('keep').sum()} species classes, {UNKNOWN_CLASS}: {len(unknown)} videos / "
-             f"{unknown['station_id'].nunique()} stations from {unknown['species'].nunique()} species")
+             f"{unknown['station_id'].nunique()} stations from {unknown['species'].nunique()} species, "
+             f"excluded: {excluded['videos'].sum()} videos of {list(excluded.index)}")
 
     if args.max_videos_per_station:
         before = len(mov)
@@ -365,12 +443,40 @@ def step_download(args):
 
 # ---- Step: frames ------------------------------------------------------------
 
+def image_entropy(frame):
+    """Shannon entropy in bits of the pixel values of all color channels (same as PIL's Image.entropy()).
+
+    The 3 x 256 channel histograms are joined into one distribution, so the maximum is log2(768) = 9.58 bits.
+    Low values mean few distinct colors, e.g. the lens covered by a bird or a washed out frame.
+    """
+    hist = np.concatenate([cv2.calcHist([frame], [c], None, [256], [0, 256]).ravel() for c in range(3)])
+    p = hist[hist > 0] / hist.sum()
+    return float(-(p * np.log2(p)).sum())
+
+
+def extraction_settings(args):
+    return {name: getattr(args, name) for name in EXTRACTION_PARAMS}
+
+
+def read_frame_stats(frame_dir):
+    stats_file = frame_dir / "_stats.json"
+    return json.loads(stats_file.read_text()) if stats_file.exists() else {}
+
+
 def extract_frames(video_path, out_root, args):
-    """Save frames that are well exposed and differ enough from the last saved frame."""
+    """Save frames that are well exposed, have enough information and differ enough from the last saved frame.
+
+    Returns the number of sampled, saved and skipped frames per reason. They are stored with the extraction settings
+    in _stats.json; videos extracted with other settings are extracted again.
+    """
     stem = video_path.stem
     out_dir = out_root / stem
+    settings = extraction_settings(args)
     if out_dir.exists():
-        return stem, len(list(out_dir.glob("*.jpg"))), "cached"
+        stats = read_frame_stats(out_dir)
+        if stats.get("settings") == settings:
+            return {"video_stem": stem, **stats["counts"], "status": "cached"}
+        shutil.rmtree(out_dir)
     tmp_dir = out_root / f"{stem}.tmp"  # renamed when done, so interrupted videos are redone
     shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True)
@@ -378,32 +484,47 @@ def extract_frames(video_path, out_root, args):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        return stem, 0, "could not open"
+        return {"video_stem": stem, "status": "could not open"}
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     frame_interval = max(int(round(fps / args.frame_rate)), 1) if args.frame_rate else 1
 
-    frame_idx = saved = 0
+    stats = {"sampled": 0, "saved": 0, **{reason: 0 for reason in SKIP_REASONS}}
+    frame_idx = 0
     prev = None
     while True:
         ret, frame = cap.read()
         if not ret:
             break
         if frame_idx % frame_interval == 0:
+            stats["sampled"] += 1
             blurred = cv2.GaussianBlur(frame, (3, 3), 0)  # cancel out sensor noise
             mean, std = blurred.mean(), blurred.std()
-            keep = args.min_brightness <= mean <= args.max_brightness and std >= args.min_std
-            if keep and prev is not None:
+            reason = None
+            if mean < args.min_brightness:
+                reason = "dark"
+            elif mean > args.max_brightness:
+                reason = "bright"
+            elif std < args.min_std:
+                reason = "low_contrast"
+            elif image_entropy(frame) < args.min_entropy:
+                reason = "low_information"
+            elif prev is not None:
                 diff = cv2.absdiff(blurred, prev)
                 fraction_changed = np.mean(cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY) > 10)
-                keep = fraction_changed >= args.frac_change and diff.mean() >= args.diff_threshold
-            if keep:
-                cv2.imwrite(str(tmp_dir / f"{stem}_{saved:03d}.jpg"), frame)
-                saved += 1
+                if fraction_changed < args.frac_change or diff.mean() < args.diff_threshold:
+                    reason = "too_similar"
+            if reason:
+                stats[reason] += 1
+            else:
+                cv2.imwrite(str(tmp_dir / f"{stem}_{stats['saved']:03d}.jpg"), frame)
+                stats["saved"] += 1
                 prev = blurred
         frame_idx += 1
     cap.release()
+    extraction_id = hashlib.md5(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:8]
+    (tmp_dir / "_stats.json").write_text(json.dumps({"settings": settings, "extraction_id": extraction_id, "counts": stats}))
     tmp_dir.rename(out_dir)
-    return stem, saved, "extracted"
+    return {"video_stem": stem, **stats, "status": "extracted"}
 
 
 def step_frames(args):
@@ -421,10 +542,16 @@ def step_frames(args):
             results.append(fut.result())
             if n % 500 == 0:
                 log.info(f"Extracted frames of {n}/{len(futures)} videos")
-    results = pd.DataFrame(results, columns=["video_stem", "frames", "status"])
+    count_cols = ["sampled", "saved", *SKIP_REASONS]
+    results = pd.DataFrame(results).reindex(columns=["video_stem", *count_cols, "status"])
+    results = results.merge(selected[["video_stem", "class"]], on="video_stem", how="left")
     results.to_csv(args.workdir / "frame_extraction.csv", index=False)
     log.info("Frame extraction status:\n" + results["status"].value_counts().to_string())
-    log.info(f"{results['frames'].sum()} frames, {results['frames'].eq(0).sum()} videos without frames")
+    log.info(f"{int(results['saved'].sum())} frames, {results['saved'].eq(0).sum()} videos without frames")
+
+    per_class = results.groupby("class")[count_cols].sum(min_count=1)
+    per_class["saved_per_video"] = results.groupby("class")["saved"].mean()
+    log.info("Frames sampled, saved and skipped per reason:\n" + per_class.to_markdown(floatfmt=".1f"))
 
 
 # ---- Step: filter ------------------------------------------------------------
@@ -453,12 +580,18 @@ def step_filter(args):
     rows = []
     for stem in selected["video_stem"]:
         if (frame_dir / stem).exists():
-            rows.extend({"frame": p.name, "video_stem": stem} for p in sorted((frame_dir / stem).glob("*.jpg")))
-    frames = pd.DataFrame(rows, columns=["frame", "video_stem"])
+            extraction_id = read_frame_stats(frame_dir / stem).get("extraction_id")
+            rows.extend((p.name, stem, extraction_id) for p in sorted((frame_dir / stem).glob("*.jpg")))
+    frames = pd.DataFrame(rows, columns=["frame", "video_stem", "extraction_id"])
 
-    # Reuse scores of earlier runs
-    cached = pd.read_csv(frames_csv)[["frame", *PROB_COLS]] if frames_csv.exists() else pd.DataFrame(columns=["frame", *PROB_COLS])
-    frames = frames.merge(cached, on="frame", how="left")
+    # Reuse scores of earlier runs, unless the video was extracted again with other settings (same names, other frames)
+    key = ["frame", "extraction_id"]
+    cached = pd.DataFrame(columns=[*key, *PROB_COLS])
+    if frames_csv.exists():
+        old = pd.read_csv(frames_csv)
+        if "extraction_id" in old:
+            cached = old[[*key, *PROB_COLS]]
+    frames = frames.merge(cached, on=key, how="left")
     frames[PROB_COLS] = frames[PROB_COLS].astype(float)
     todo = frames[frames["p_bird"].isna()]
     log.info(f"{len(frames)} frames, {len(todo)} to score")
@@ -504,7 +637,8 @@ def step_assemble(args):
     frame_dir = args.workdir / "frames"
     dataset_dir, rejected_dir = args.workdir / "dataset", args.workdir / "rejected"
 
-    # Bird frames keep their class, background frames become the background class of the same split
+    # Bird frames keep their class, background frames become the background class of the same split,
+    # unclear frames are rejected
     frames["target"] = np.where(frames["filter_label"] == "background", BACKGROUND_CLASS, frames["class"])
     frames.loc[frames["filter_label"] == "unclear", "target"] = None
 
@@ -532,12 +666,11 @@ def step_assemble(args):
 # ---- Step: report ------------------------------------------------------------
 
 def save_sample_grid(ds, frame_dir, path, split="train", per_class=5, seed=42):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
 
     classes = sorted(ds["target"].unique())
-    fig, axes = plt.subplots(len(classes), per_class, figsize=(2.4 * per_class, 1.8 * len(classes)), squeeze=False)
+    fig = Figure(figsize=(2.4 * per_class, 1.8 * len(classes)))
+    axes = fig.subplots(len(classes), per_class, squeeze=False)
     for r, cls in enumerate(classes):
         sub = ds[(ds["target"] == cls) & (ds["split"] == split)]
         sub = sub.sample(min(per_class, len(sub)), random_state=seed)
@@ -552,7 +685,6 @@ def save_sample_grid(ds, frame_dir, path, split="train", per_class=5, seed=42):
                 ax.set_title(cls, fontsize=8, loc="left")
     fig.tight_layout()
     fig.savefig(path, dpi=100)
-    plt.close(fig)
 
 
 def step_report(args):
@@ -581,6 +713,21 @@ def step_report(args):
     log.info(f"Nested folders inside classes:   {len(nested)} (expected 0)")
     log.info(f"Classes (train): {sorted(p.name for p in (dataset_dir / 'train').iterdir() if p.is_dir())}")
 
+    # Where frames get lost per class: extraction checks -> unclear -> background or kept
+    funnel = pd.DataFrame(index=sorted(frames["class"].unique()))
+    extraction_csv = args.workdir / "frame_extraction.csv"
+    if extraction_csv.exists():
+        extraction = pd.read_csv(extraction_csv)
+        funnel = funnel.join(extraction.groupby("class")[["sampled", *SKIP_REASONS]].sum(min_count=1)
+                             .add_prefix("skipped_").rename(columns={"skipped_sampled": "sampled"}))
+    funnel["extracted"] = frames.groupby("class").size()
+    funnel["unclear"] = (frames["filter_label"] == "unclear").groupby(frames["class"]).sum()
+    funnel["background"] = (frames["target"] == BACKGROUND_CLASS).groupby(frames["class"]).sum()
+    funnel["kept"] = (frames["target"].notna() & (frames["target"] != BACKGROUND_CLASS)).groupby(frames["class"]).sum()
+    funnel = funnel.fillna(0).astype(int)
+    funnel.to_csv(reports / "frame_funnel.csv")
+    log.info("Frames per class from sampling to dataset:\n" + funnel.to_markdown())
+
     save_sample_grid(ds, args.workdir / "frames", reports / "samples_train.png", seed=args.seed)
     log.info(f"Reports written to {reports}")
 
@@ -593,6 +740,12 @@ def optional_int(value):
 
 def optional_path(value):
     return None if value.lower() == "none" else Path(value).expanduser().resolve()
+
+
+def species_name(value):
+    """Accept 'Sylvia atricapilla' as well as 'sylvia_atricapilla'."""
+    name = value.strip().lower().replace(" ", "_")
+    return SPECIES_SYNONYMS.get(name, name)
 
 
 def parse_args(argv=None):
@@ -608,6 +761,9 @@ def parse_args(argv=None):
     g.add_argument("--movements-per-station", type=int, default=1_000_000, help="API limit of movements per station.")
 
     g = p.add_argument_group("classes and splits")
+    g.add_argument("--exclude-species", nargs="*", type=species_name, default=EXCLUDED_SPECIES,
+                   help="Species to drop completely, e.g. because of unreliable validations (default: %(default)s). "
+                        "Pass the flag without values to keep all species.")
     g.add_argument("--min-videos", type=int, default=30, help="Min. single-species videos for an own class.")
     g.add_argument("--min-stations", type=int, default=5, help="Min. stations for an own class.")
     g.add_argument("--max-station-share", type=float, default=0.8, help="Max. share of videos from the biggest station.")
@@ -626,17 +782,19 @@ def parse_args(argv=None):
 
     g = p.add_argument_group("frames")
     g.add_argument("--frame-rate", type=float, default=5, help="Frames per second to look at.")
-    g.add_argument("--diff-threshold", type=float, default=20, help="Min. mean abs. difference to the last saved frame.")
+    g.add_argument("--diff-threshold", type=float, default=10, help="Min. mean abs. difference to the last saved frame.")
     g.add_argument("--frac-change", type=float, default=0.2, help="Min. fraction of changed pixels to the last saved frame.")
     g.add_argument("--min-brightness", type=float, default=20)
     g.add_argument("--max-brightness", type=float, default=235)
     g.add_argument("--min-std", type=float, default=50, help="Min. contrast (std of pixel values).")
+    g.add_argument("--min-entropy", type=float, default=6.2,
+                   help="Min. entropy in bits of the color histogram (max. 9.58); lower is e.g. a bird covering the lens.")
     g.add_argument("--frame-workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 4)))
 
     g = p.add_argument_group("filter")
-    g.add_argument("--filter-model", type=Path, default=SCRIPT_DIR / "acc98.98_e22_bird_filter_0729_1145.pth")
+    g.add_argument("--filter-model", type=Path, default=SCRIPT_DIR / "filter-bird-background.pth")
     g.add_argument("--filter-img-size", type=int, default=960)
-    g.add_argument("--filter-threshold", type=float, default=90.0, help="Percent probability for background/unclear.")
+    g.add_argument("--filter-threshold", type=float, default=85.0, help="Percent probability for background/unclear.")
     g.add_argument("--filter-batch-size", type=int, default=8)
     g.add_argument("--filter-workers", type=int, default=0, help="DataLoader workers for the filter.")
     g.add_argument("--max-background-per-video", type=optional_int, default=None,
@@ -651,26 +809,37 @@ def parse_args(argv=None):
     return args
 
 
-def main(argv=None):
-    args = parse_args(argv)
+STEP_FUNCTIONS = {"metadata": step_metadata, "split": step_split, "download": step_download, "frames": step_frames,
+                  "filter": step_filter, "assemble": step_assemble, "report": step_report}
+
+
+def setup(args):
+    """Create the workdir, log to stdout and build_dataset.log, save the config."""
     args.workdir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(args.workdir / "build_dataset.log")],
+        force=True,  # replace handlers when called again, e.g. in a notebook
     )
     config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
     (args.workdir / "config.json").write_text(json.dumps(config, indent=2))
     log.info(f"Config: {config}")
 
-    steps = {"metadata": step_metadata, "split": step_split, "download": step_download, "frames": step_frames,
-             "filter": step_filter, "assemble": step_assemble, "report": step_report}
+
+def run_step(name, args):
+    log.info(f"===== Step: {name}")
+    start = time.time()
+    STEP_FUNCTIONS[name](args)
+    log.info(f"===== Step {name} done in {time.time() - start:.0f}s")
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    setup(args)
     for name in STEPS:  # always in pipeline order
         if name in args.steps:
-            log.info(f"===== Step: {name}")
-            start = time.time()
-            steps[name](args)
-            log.info(f"===== Step {name} done in {time.time() - start:.0f}s")
+            run_step(name, args)
 
 
 if __name__ == "__main__":
