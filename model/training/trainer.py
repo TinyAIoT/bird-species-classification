@@ -5,6 +5,8 @@ import torch.optim as optim
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 
+CLASS_WEIGHTINGS = ("none", "inverse_sqrt", "inverse")
+
 
 class Trainer:
     """Generic training class that can be used for both transfer learning and fine-tuning"""
@@ -19,6 +21,12 @@ class Trainer:
         self.output_path = os.path.join(config["output_path"], self.model_name)
 
         self.dataset_handler = dataset_handler
+
+        # Loss configuration
+        self.class_weighting = config.get("class_weighting", "none")
+        if self.class_weighting not in CLASS_WEIGHTINGS:
+            raise ValueError(f"class_weighting must be one of {CLASS_WEIGHTINGS}, got '{self.class_weighting}'")
+        self.label_smoothing = config.get("label_smoothing", 0.0)
 
         # Training state
         self.history = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": []}
@@ -64,7 +72,7 @@ class Trainer:
         self.dataset_handler.print_data_loader_structure(val_loader)
 
         # Setup training components
-        criterion = nn.CrossEntropyLoss()
+        criterion = self._build_criterion()
 
         # Only optimize trainable parameters
         trainable_params = filter(lambda p: p.requires_grad, model.parameters())
@@ -129,6 +137,27 @@ class Trainer:
         print(f"Best validation loss: {best_val_loss:.4f}")
         print("=" * 50)
         return self.history, self.best_epoch, self.last_epoch
+
+    def _build_criterion(self):
+        """Cross-entropy loss with optional class weights and label smoothing.
+
+        class_weighting "inverse" weights each class by 1 / its share of the training images, "inverse_sqrt" by
+        1 / sqrt(share), a milder rebalancing. Weights are scaled so that the average weight per training image is 1,
+        which keeps the loss (and the effective learning rate) on the same scale as without weighting.
+        """
+        weights = None
+        if self.class_weighting != "none":
+            counts = self.dataset_handler.get_train_class_counts().clamp(min=1)
+            share = counts / counts.sum()
+            weights = 1 / share if self.class_weighting == "inverse" else 1 / share.sqrt()
+            weights = weights / (weights * share).sum()
+            print(f"Class weights ({self.class_weighting}):")
+            for name, n, w in zip(self.dataset_handler.get_class_names(), counts.tolist(), weights.tolist()):
+                print(f"  {name:<32} {int(n):>7} images  weight {w:.2f}")
+            weights = weights.to(self.dataset_handler.get_device())
+        if self.label_smoothing:
+            print(f"Label smoothing: {self.label_smoothing}")
+        return nn.CrossEntropyLoss(weight=weights, label_smoothing=self.label_smoothing)
 
     def _train_epoch(self, model, train_loader, criterion, optimizer, phase_name, scheduler=None, callbacks=None):
         """Train for one epoch

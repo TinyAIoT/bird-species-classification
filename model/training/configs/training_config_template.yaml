@@ -7,7 +7,13 @@ output_path: path/to/output # Path to save outputs (required)
 datasets: # List of datasets to be used for training
   - name: DataSet-1      # Name of the dataset (required)
     path: path/to/dataset-1 # Path to the dataset (required)
-    transforms: # List of ordered transformations to be applied to the dataset, choose order and type based on your dataset and model
+    transforms: # Ordered transformations for validation and test (and for training if no train_transforms are given).
+                # Use deterministic transforms only here, random ones would make the evaluation random as well.
+      - resize : {height: 224, width: 224}
+      - ToTensor
+      - normalize: {mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+    train_transforms: # (optional) Ordered transformations for training only, e.g. with random augmentations.
+                      # Should end with the same output size, ToTensor and normalize as `transforms`.
       # Rotate using torchvision.transforms.functional.rotate
       - rotate: {degrees: -90}
             # degrees (float or int) – Angle to rotate the image, in degrees. NOTE: Positive values mean counter-clockwise rotation.
@@ -64,6 +70,12 @@ batch_size: 32 # Batch size for training (default: 32)
 patience: 5 # Patience for early stopping, to disable set to 0 (default: 5)
 model_type: squeezenet # Type of the model. Choose from enum: ["shufflenet", "mobilenet", "efficientnet", "efficientnet_b0", "densenet", "squeezenet", "mnasnet"] (default: squeezenet)
 num_workers: 4 # Number of workers for data loading (default: 4)
+
+# Loss configuration
+class_weighting: none # Class weights for the cross-entropy loss, from the number of training images per class. Choose from
+                      # ["none", "inverse_sqrt", "inverse"]: inverse = 1 / class share, inverse_sqrt = 1 / sqrt(class share),
+                      # a milder rebalancing (default: none). Also used for the validation loss (early stopping).
+label_smoothing: 0.0 # Label smoothing of the cross-entropy loss, e.g. 0.1 against overconfident predictions (default: 0.0)
 
 # Transfer Learning configuration
 transfer_learning_epochs: 10  # Epochs for transfer learning phase (default: 10)

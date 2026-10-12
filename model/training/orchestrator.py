@@ -425,6 +425,10 @@ class Orchestrator:
                 "fine_tuning_weight_decay": self.config["fine_tuning_weight_decay"],
                 "unfrozen_layers": self.config["num_unfreezed_feature_layers"],
             },
+            "loss": {
+                "class_weighting": self.config.get("class_weighting", "none"),
+                "label_smoothing": self.config.get("label_smoothing", 0.0),
+            },
         }
         return info
 

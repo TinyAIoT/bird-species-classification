@@ -1,4 +1,6 @@
 import os
+from collections import Counter
+
 import torch
 import torchvision
 from torchvision import datasets, transforms
@@ -7,6 +9,9 @@ from torchvision.transforms import functional as F
 from torch.utils.data import DataLoader, ConcatDataset
 from utils.training_utils import get_default_device, check_corrupted, to_device
 from utils.dataset_utils import SaveEvery_nth_image, CenterCrop, Image_Name_Saver, ImageFolderWithFilename, MappingConcatDataset
+
+# Transforms with randomness, they belong in `train_transforms` only
+RANDOM_TRANSFORMS = {"RandomResizedCrop", "RandomCrop", "RandomHorizontalFlip", "ColorJitter"}
 
 
 class DatasetHandler:
@@ -31,88 +36,103 @@ class DatasetHandler:
         self.test_loader = None
 
     def build_transforms(self):
-        transforms_built = []
-        for dataset in self.datasets:
-            dataset_transforms = []
-            name_saver = Image_Name_Saver()
-            dataset_transforms.append(name_saver)
-            for t in dataset.get("transforms", []):                
-                if "resize" in t:
-                    params = t["resize"]
-                    height = params["height"]
-                    width = params["width"]
-                    dataset_transforms.append(transforms.Resize((height, width)))
-                if "RandomResizedCrop" in t:
-                    params = t["RandomResizedCrop"]                    
-                    height = params["height"]
-                    width = params["width"]
-                    scale = params["scale"]
-                    dataset_transforms.append(transforms.RandomResizedCrop((height, width), scale=scale))
-                if "RandomCrop" in t:
-                    params = t["RandomCrop"]
-                    height = params["height"]
-                    width = params["width"]
-                    padding = params.get("padding", 0)
-                    pad_if_needed = params.get("pad_if_needed", False)
-                    fill = params.get("fill", 0)
-                    padding_mode = params.get("padding_mode", "constant")
-                    dataset_transforms.append(transforms.RandomCrop((height, width), padding=padding, pad_if_needed=pad_if_needed, 
-                                                                    fill=fill, padding_mode=padding_mode))
-                if "rotate" in t:
-                    degrees = t["rotate"].get("degrees", 0)
-                    dataset_transforms.append(L(lambda img: F.rotate(img, degrees)))
-                if "RandomHorizontalFlip" in t:
-                    params = t["RandomHorizontalFlip"]
-                    p = params["probability"]
-                    dataset_transforms.append(transforms.RandomHorizontalFlip(p=p))
-                if "crop_relative" in t:
-                    params = t["crop_relative"]
-                    top = params.get("top", 0.0)
-                    left = params.get("left", 0.0)
-                    height = params["height"]
-                    width = params["width"]
-                    dataset_transforms.append(L(lambda img: F.resized_crop(img, int(top * img.height), int(left * img.width), 
-                                                                           int(height * img.height), int(width * img.width), (img.height, img.width))))
-                if "CenterCrop" in t:
-                    params = t["CenterCrop"]
-                    side = params.get("side", "center")
-                    height = params["height"]
-                    width = params["width"]
-                    dataset_transforms.append(CenterCrop(side, height, width))
-                if "crop" in t:
-                    params = t["crop"]
-                    top = params.get("top", 0)
-                    left = params.get("left", 0)
-                    height = params["height"]
-                    width = params["width"]
-                    dataset_transforms.append(L(lambda img: F.crop(img, top, left, height, width)))
-                if "ColorJitter" in t:
-                    params = t["ColorJitter"]
-                    b = params["brightness"]
-                    c = params["contrast"]
-                    s = params["saturation"]
-                    h = params["hue"]
-                    dataset_transforms.append(transforms.ColorJitter(brightness=b, contrast=c, saturation=s, hue=h))
-                if "save_img" in t:
-                    params = t["save_img"]
-                    n = params.get("n", 100)
-                    save_dir = params.get("save_dir", "debug_images")
-                    dataset_transforms.append(SaveEvery_nth_image(n=n, save_dir=save_dir, name_saver=name_saver))
-                if "ToTensor" in t:
-                    dataset_transforms.append(transforms.ToTensor())
-                if "normalize" in t:
-                    params = t["normalize"]
-                    mean = params.get("mean", [0.485, 0.456, 0.406])
-                    std = params.get("std", [0.229, 0.224, 0.225])
-                    dataset_transforms.append(transforms.Normalize(mean=mean, std=std))
-            transform = transforms.Compose(dataset_transforms)
-            transforms_built.append((dataset["name"], transform))
+        """Build per dataset one transform for training and one for evaluation (val/test).
 
-        self.transforms_built = {name: transform for name, transform in transforms_built}
+        `transforms` are used for val/test, and also for training if no `train_transforms` are given.
+        `train_transforms` (optional) are only used for training, e.g. to add random augmentations.
+        """
+        self.transforms_built = {}
+        for dataset in self.datasets:
+            eval_list = dataset.get("transforms", [])
+            random_in_eval = [k for t in eval_list if isinstance(t, dict) for k in t if k in RANDOM_TRANSFORMS]
+            if random_in_eval:
+                print(f"Warning: dataset {dataset['name']} has random transforms {random_in_eval} in `transforms`, "
+                      f"they are also applied to val/test. Move them to `train_transforms`.")
+            eval_transform = self._compose(eval_list)
+            train_list = dataset.get("train_transforms")
+            train_transform = self._compose(train_list) if train_list is not None else eval_transform
+            self.transforms_built[dataset["name"]] = (train_transform, eval_transform)
+
         print("Built the following transforms for datasets: \n")
-        for name, transform in transforms_built:
-            print(f"Dataset: {name}, Transform: {transform} \n")
-        return transform
+        for name, (train_transform, eval_transform) in self.transforms_built.items():
+            print(f"Dataset: {name}\n  Train transform: {train_transform}\n  Val/test transform: {eval_transform} \n")
+        return eval_transform
+
+    def _compose(self, transform_list):
+        """Build a torchvision Compose from a list of transform configs (see training_config_template.yaml)."""
+        dataset_transforms = []
+        name_saver = Image_Name_Saver()
+        dataset_transforms.append(name_saver)
+        for t in transform_list:
+            if "resize" in t:
+                params = t["resize"]
+                height = params["height"]
+                width = params["width"]
+                dataset_transforms.append(transforms.Resize((height, width)))
+            if "RandomResizedCrop" in t:
+                params = t["RandomResizedCrop"]                    
+                height = params["height"]
+                width = params["width"]
+                scale = params["scale"]
+                dataset_transforms.append(transforms.RandomResizedCrop((height, width), scale=scale))
+            if "RandomCrop" in t:
+                params = t["RandomCrop"]
+                height = params["height"]
+                width = params["width"]
+                padding = params.get("padding", 0)
+                pad_if_needed = params.get("pad_if_needed", False)
+                fill = params.get("fill", 0)
+                padding_mode = params.get("padding_mode", "constant")
+                dataset_transforms.append(transforms.RandomCrop((height, width), padding=padding, pad_if_needed=pad_if_needed, 
+                                                                fill=fill, padding_mode=padding_mode))
+            if "rotate" in t:
+                degrees = t["rotate"].get("degrees", 0)
+                dataset_transforms.append(L(lambda img: F.rotate(img, degrees)))
+            if "RandomHorizontalFlip" in t:
+                params = t["RandomHorizontalFlip"]
+                p = params["probability"]
+                dataset_transforms.append(transforms.RandomHorizontalFlip(p=p))
+            if "crop_relative" in t:
+                params = t["crop_relative"]
+                top = params.get("top", 0.0)
+                left = params.get("left", 0.0)
+                height = params["height"]
+                width = params["width"]
+                dataset_transforms.append(L(lambda img: F.resized_crop(img, int(top * img.height), int(left * img.width), 
+                                                                       int(height * img.height), int(width * img.width), (img.height, img.width))))
+            if "CenterCrop" in t:
+                params = t["CenterCrop"]
+                side = params.get("side", "center")
+                height = params["height"]
+                width = params["width"]
+                dataset_transforms.append(CenterCrop(side, height, width))
+            if "crop" in t:
+                params = t["crop"]
+                top = params.get("top", 0)
+                left = params.get("left", 0)
+                height = params["height"]
+                width = params["width"]
+                dataset_transforms.append(L(lambda img: F.crop(img, top, left, height, width)))
+            if "ColorJitter" in t:
+                params = t["ColorJitter"]
+                b = params["brightness"]
+                c = params["contrast"]
+                s = params["saturation"]
+                h = params["hue"]
+                dataset_transforms.append(transforms.ColorJitter(brightness=b, contrast=c, saturation=s, hue=h))
+            if "save_img" in t:
+                params = t["save_img"]
+                n = params.get("n", 100)
+                save_dir = params.get("save_dir", "debug_images")
+                dataset_transforms.append(SaveEvery_nth_image(n=n, save_dir=save_dir, name_saver=name_saver))
+            if "ToTensor" in t:
+                dataset_transforms.append(transforms.ToTensor())
+            if "normalize" in t:
+                params = t["normalize"]
+                mean = params.get("mean", [0.485, 0.456, 0.406])
+                std = params.get("std", [0.229, 0.224, 0.225])
+                dataset_transforms.append(transforms.Normalize(mean=mean, std=std))
+        return transforms.Compose(dataset_transforms)
 
     def load_data(self):
         """
@@ -145,10 +165,10 @@ class DatasetHandler:
             train_path = ds["train_path"]
             val_path = ds["val_path"]
             test_path = ds["test_path"]
-            transform = self.transforms_built[name]
-            train_datasets.append(ImageFolderWithFilename(train_path, transform))
-            val_datasets.append(ImageFolderWithFilename(val_path, transform))
-            test_datasets.append(ImageFolderWithFilename(test_path, transform))
+            train_transform, eval_transform = self.transforms_built[name]
+            train_datasets.append(ImageFolderWithFilename(train_path, train_transform))
+            val_datasets.append(ImageFolderWithFilename(val_path, eval_transform))
+            test_datasets.append(ImageFolderWithFilename(test_path, eval_transform))
 
         self.train_data = ConcatDataset(train_datasets)
         self.val_data = ConcatDataset(val_datasets)
@@ -202,6 +222,17 @@ class DatasetHandler:
             pin_memory=self.pin_memory,
             persistent_workers=True,
         )
+
+    def get_train_class_counts(self):
+        """Return the number of training images per class, in the order of get_class_names()
+        Returns:
+            torch.Tensor: Image counts per class
+        """
+        counts = torch.zeros(len(self.class_names))
+        for ds in self.train_data.datasets:
+            for target, n in Counter(ds.targets).items():
+                counts[self.class_names.index(ds.classes[target])] += n
+        return counts
 
     def get_class_names(self):
         """Return the class names
