@@ -12,12 +12,13 @@ This script demonstrates the new six-component architecture that properly handle
 # Imports
 import yaml
 import argparse
+import glob
 import os
 import json
 from orchestrator import Orchestrator
 
 
-def run_full_pipeline(config):
+def run_full_pipeline(config, resume=False):
     print("\n" + "=" * 70)
     print("TYPICAL TRANSFER LEARNING WORKFLOW")
     print("=" * 70)
@@ -36,7 +37,7 @@ def run_full_pipeline(config):
     orchestrator.print_component_info()
 
     # Run the workflow
-    results = orchestrator.run_transfer_learning_pipeline()
+    results = orchestrator.run_transfer_learning_pipeline(resume=resume)
     # results = orchestrator.run_transfer_learning_only()
     # results = orchestrator.run_fine_tuning_only()
 
@@ -72,6 +73,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file.")
     parser.add_argument("--working_dir", type=str, default="./", help="Path to local data directory.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Continue an interrupted run of the same model_name from its saved training states "
+                             "(starts from the beginning if there is nothing to resume).")
     args = parser.parse_args()
 
     # Read the configuration file
@@ -86,6 +90,20 @@ if __name__ == "__main__":
             config_save_path = os.path.join(
                 output_path, model_name, model_name + ".yaml"
             )
+
+            # Never overwrite the checkpoints of an earlier run by accident
+            existing = glob.glob(os.path.join(output_path, model_name, f"{model_name}_*.pt"))
+            if existing and not args.resume:
+                print(f"Error: {os.path.join(output_path, model_name)} already contains checkpoints of an earlier run.\n"
+                      f"Use --resume to continue it, or change model_name / move the folder to start a new run.")
+                exit(1)
+            if args.resume and os.path.exists(config_save_path):
+                with open(config_save_path) as f:
+                    previous = yaml.safe_load(f) or {}
+                changed = sorted(k for k in set(config) | set(previous) if config.get(k) != previous.get(k))
+                if changed:
+                    print(f"Warning: resuming with a config that differs from the interrupted run in: {changed}")
+
             if not os.path.exists(os.path.dirname(config_save_path)):
                 os.makedirs(os.path.dirname(config_save_path), exist_ok=True)
             with open(config_save_path, "w") as f:
@@ -138,7 +156,7 @@ if __name__ == "__main__":
         exit(1)
 
     # Run the full transfer learning + fine-tuning pipeline
-    run_full_pipeline(config)
+    run_full_pipeline(config, resume=args.resume)
 
     # # Use the following code to compare across different fine tuning strategies:
     #

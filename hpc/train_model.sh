@@ -36,6 +36,8 @@ uv pip install PyYAML tqdm scikit-learn einops seaborn torch_optimizer
 
 # run code with flags
 # run sbatch with flag --config path/to/config.yaml
+# add --resume to continue a run that was interrupted (e.g. by the time limit) from its last finished epoch;
+# without --resume the run refuses to start if the output folder already contains checkpoints
 python "$code"/model/training/run_transfer_learning_pipeline.py --working_dir $wd "$@"
 echo "end of Training for Job "$SLURM_JOB_ID" :"
 echo `date +%Y.%m.%d-%H:%M:%S`

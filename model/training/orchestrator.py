@@ -44,8 +44,11 @@ class Orchestrator:
         self.last_epoch = 0
         self.initial_epochs = 0
 
-    def run_transfer_learning_pipeline(self):
+    def run_transfer_learning_pipeline(self, resume=False):
         """Run the complete transfer learning pipeline (transfer learning + optional fine-tuning)
+        Args:
+            resume (bool): Continue an interrupted run from the saved training states (<prefix>_last.pt).
+                A finished transfer learning phase is skipped, an interrupted phase continues at the next epoch.
         Returns:
             dict: Dictionary containing the trained model, training history, evaluation results, best epoch, and last epoch.
         """
@@ -82,6 +85,7 @@ class Orchestrator:
                 phase_name="transfer_learning",
                 checkpoint_prefix=f"{self.model_name}_transfer_learning",
                 profile=self.profile_mode,
+                resume=resume,
             )
         )
 
@@ -110,6 +114,7 @@ class Orchestrator:
                     phase_name="fine_tuning",
                     checkpoint_prefix=f"{self.model_name}_fine_tuning",
                     profile=self.profile_mode,
+                    resume=resume,
                 )
             )
 

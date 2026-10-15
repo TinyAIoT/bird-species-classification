@@ -8,6 +8,13 @@ from tqdm import tqdm
 CLASS_WEIGHTINGS = ("none", "inverse_sqrt", "inverse")
 
 
+def _atomic_save(obj, path):
+    """torch.save to a temporary file first, so a job killed while saving never leaves a broken checkpoint"""
+    tmp_path = path + ".tmp"
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, path)
+
+
 class Trainer:
     """Generic training class that can be used for both transfer learning and fine-tuning"""
 
@@ -33,9 +40,13 @@ class Trainer:
         self.best_epoch = 0
         self.last_epoch = 0
 
-    def train_model(self, model, epochs=0, learning_rate=0, weight_decay=0, patience=0, phase_name="training", checkpoint_prefix="", profile=False):
+    def train_model(self, model, epochs=0, learning_rate=0, weight_decay=0, patience=0, phase_name="training", checkpoint_prefix="", profile=False, resume=False):
         """
         Generic training method that can be used for both transfer learning and fine-tuning
+
+        After every epoch the complete training state is saved to <checkpoint_prefix>_last.pt, so an interrupted
+        phase can be continued with resume=True. A phase that already finished is skipped (its last model state
+        is loaded, so a following phase starts from the same weights as in an uninterrupted run).
 
         Args:
             model: The model to train
@@ -45,6 +56,7 @@ class Trainer:
             phase_name (str): Name of the training phase (e.g., 'training', 'fine-tuning')
             checkpoint_prefix (str): Prefix for the checkpoint files
             profile (bool): Whether to enable profiling mode (default: False)
+            resume (bool): Continue from <checkpoint_prefix>_last.pt if it exists (default: False)
         Returns:
             history (dict): Training history containing loss and accuracy metrics
             best_epoch (int): The epoch number of the best model
@@ -81,10 +93,33 @@ class Trainer:
 
         best_val_loss = float("inf")
         patience_counter = 0
+        start_epoch = 0
+
+        state_path = os.path.join(self.output_path, f"{checkpoint_prefix}_last.pt")
+        if resume:
+            if os.path.exists(state_path):
+                # Load to CPU (history must stay there for the plots); load_state_dict moves model/optimizer to their device
+                state = torch.load(state_path, map_location="cpu", weights_only=False)
+                model.load_state_dict(state["model"])
+                optimizer.load_state_dict(state["optimizer"])
+                scheduler.load_state_dict(state["scheduler"])
+                self.history = state["history"]
+                self.best_epoch = state["best_epoch"]
+                self.last_epoch = state["epoch"]
+                best_val_loss = state["best_val_loss"]
+                patience_counter = state["patience_counter"]
+                start_epoch = state["epoch"] + 1
+                if state["early_stopped"] or start_epoch >= epochs:
+                    print(f"{phase_name.title()} already finished after epoch {start_epoch}, skipping it")
+                    return self.history, self.best_epoch, self.last_epoch
+                print(f"Resuming {phase_name} at epoch {start_epoch + 1}/{epochs} "
+                      f"(best epoch {self.best_epoch + 1}, validation loss {best_val_loss:.4f})")
+            else:
+                print(f"No saved state for {phase_name} found ({state_path}), starting it from the beginning")
 
         print(f"Starting {phase_name} for {epochs} epochs...")
 
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             print(f"\n{phase_name.title()} Epoch {epoch + 1}/{epochs}")
 
             # Training phase
@@ -126,8 +161,10 @@ class Trainer:
                 if patience > 0 and patience_counter >= patience:
                     self.last_epoch = epoch
                     print(f"{phase_name.title()} early stopping triggered after {patience} epochs without improvement")
+                    self._save_state(state_path, model, optimizer, scheduler, epoch, best_val_loss, patience_counter, early_stopped=True)
                     break
             self.last_epoch = epoch
+            self._save_state(state_path, model, optimizer, scheduler, epoch, best_val_loss, patience_counter, early_stopped=False)
             print(f"Current best {phase_name} model at epoch {self.best_epoch + 1} with validation loss {best_val_loss:.4f}")
             print("-" * 50)
 
@@ -299,10 +336,10 @@ class Trainer:
             phase_name (str): Name of the training phase (e.g., 'training', 'fine-tuning')
         """
         # Save full model
-        torch.save(model, os.path.join(self.output_path, f"{checkpoint_prefix}.pth"))
+        _atomic_save(model, os.path.join(self.output_path, f"{checkpoint_prefix}.pth"))
 
         # Save state dict
-        torch.save(model.state_dict(), os.path.join(self.output_path, f"{checkpoint_prefix}.pt"))
+        _atomic_save(model.state_dict(), os.path.join(self.output_path, f"{checkpoint_prefix}.pt"))
 
         # Save training info
         checkpoint_info = {
@@ -313,7 +350,22 @@ class Trainer:
             "phase": phase_name,
         }
 
-        torch.save(checkpoint_info, os.path.join(self.output_path, f"{checkpoint_prefix}_info.pt"))
+        _atomic_save(checkpoint_info, os.path.join(self.output_path, f"{checkpoint_prefix}_info.pt"))
+
+    def _save_state(self, path, model, optimizer, scheduler, epoch, best_val_loss, patience_counter, early_stopped):
+        """Save everything needed to continue the phase after the given epoch (see train_model(resume=True))"""
+        state = {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "epoch": epoch,
+            "best_epoch": self.best_epoch,
+            "best_val_loss": best_val_loss,
+            "patience_counter": patience_counter,
+            "early_stopped": early_stopped,
+            "history": self.history,
+        }
+        _atomic_save(state, path)
 
     def get_training_summary(self, phase_name="Training"):
         """Get a summary of the training results
