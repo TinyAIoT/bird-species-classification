@@ -1,11 +1,9 @@
 #!/bin/bash
-
-##SBATCH --nodes=1
-#SBATCH --ntasks=1                    # Total number of tasks
-#SBATCH --gres=gpu:1                  # Request 2 GPUs
-#SBATCH --cpus-per-task=4             # Number of CPU cores
-#SBATCH --mem=10GB                    # Memory per node
-
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16GB
 #SBATCH --partition=requeue-gpu
 # Use one of these options:
 #   all (non-private) zen3 gpus:      gpu2080,gpua100,gputitanrtx,gpu3090,gpuhgx
@@ -13,90 +11,67 @@
 #   zen4 nodes:                       gpu4090,gpuh200
 #   skylake nodes:                    gpuv100
 #   express gpu:                      gpuexpress (max time of 2:00:00 only for short training)
-
-#SBATCH --time=0-01:00:00
-
+#SBATCH --time=0-02:00:00
 #SBATCH --job-name=quant_torch
-
 #SBATCH --mail-type=ALL
-#SBATCH --output=/scratch/tmp/%u/BirdBox/tmp/compression/quantize_torch_%j.log
+#SBATCH --output=/scratch/tmp/%u/tinybirdiary/tmp/compression/quantize_torch_%j.log
 
-#load modules 
-module purge
-ml foss/2023a 
-ml PyTorch/2.1.2-CUDA-12.1.1
-ml scikit-learn/1.3.1
-ml matplotlib/3.7.2
+# Quantizes a trained model for the ESP32-S3 with compression/esp-dl/quantize_torch_model.py.
+#
+# Usage:
+#   sbatch hpc/quantize_torch.sh <config> [further arguments of quantize_torch_model.py]
+#   sbatch hpc/quantize_torch.sh compression/esp-dl/configs/squeezenet_none.yaml
+#   sbatch hpc/quantize_torch.sh compression/esp-dl/configs/squeezenet_layerwise.yaml       # grid search, see below
+#   sbatch hpc/quantize_torch.sh compression/esp-dl/configs/squeezenet_layerwise.yaml --including_bias
+# <config> is relative to the code directory (or absolute). Paths inside the config are relative to $wd.
+# For configs with LayerwiseEqualization_quantization all combinations of the parameters below are run,
+# every run adds a row to <model_name>_quant-metrics.csv. Other configs are run once.
 
-pip install --user torchvision==0.16.2
-pip install --user seaborn
-pip install --user onnxruntime 
-pip install --user esp-ppq
+set -euo pipefail
 
-# place of code
-home="$HOME"
-wd="$WORK"/BirdBox
-code="$HOME"/BirdBox
-log_path="$WORK"/BirdBox/tmp/compression/torch_quantize_"$SLURM_JOB_ID"
-config="$WORK"/BirdBox/configs/compression/mbnv2.yaml
+if [ $# -lt 1 ]; then
+    echo "Usage: sbatch hpc/quantize_torch.sh <config> [arguments of quantize_torch_model.py]"
+    exit 1
+fi
 
-# Define an array of input models as parameters
-# opt_level=( 1 2 )
-# iterations=( 2)
-# value_threshold=( 0.2 0.5 0.8 1 1.5 2)
-# including_bias=( False True )
-# bias_multiplier=( 0.5 )
-# including_act=( False True )
-# act_multiplier=( 0.5 )
+# Project paths
+code="$HOME"/tinybirdiary
+wd="$WORK"/tinybirdiary
 
-opt_level=( 1 2 )
+config="$1"
+shift
+if [[ "$config" != /* ]]; then
+    config="$code/$config"
+fi
+
+# Equalization parameters of the grid search
+opt_levels=( 1 2 )
 iterations=( 10 )
-value_threshold=( 0.5 )
+value_thresholds=( 0.5 1.0 2.0 2.5 )
 
-# Loop through the input models and convert them to ONNX format
-for opt_level in "${opt_level[@]}"
-do
-    for iterations in "${iterations[@]}"
-    do
-        for value_threshold in "${value_threshold[@]}"
-        do
-            # for including_bias in "${including_bias[@]}"
-            # do
-            #     for bias_multiplier in "${bias_multiplier[@]}"
-            #     do
-            #         for including_act in "${including_act[@]}"
-            #         do
-            #             for act_multiplier in "${act_multiplier[@]}"
-            #             do
-                            python "$code"/compression/esp-dl/quantize_torch_model.py --opt_level $opt_level --iterations $iterations --value_threshold $value_threshold --working_dir $wd --config $config "$@"
-                            # srun --ntasks=1 --nodes=1 --cpus-per-task=$SLURM_CPUS_PER_TASK --mem=6GB --gres=gpu:1 python "$code"/compression/esp-dl/quantize_torch_model.py --opt_level $opt_level --iterations $iterations --value_threshold $value_threshold --working_dir $wd "$@" > "$log_path"_model_"$opt_level"_"$iterations"_"$value_threshold".log 2>&1 &
-            #             done
-            #         done
-            #     done
-            # done
+module purge
+ml uv
+
+# Create and activate virtual environment with uv
+uv venv "$wd"/.quant-torch-venv
+source "$wd"/.quant-torch-venv/bin/activate
+uv pip install torch torchvision PyYAML pandas tqdm scikit-learn matplotlib seaborn onnxruntime esp-ppq
+
+run() {
+    python "$code"/compression/esp-dl/quantize_torch_model.py --config "$config" --working_dir "$wd" "$@"
+}
+
+if grep -qE '^quant_config:[[:space:]]*"?LayerwiseEqualization_quantization' "$config"; then
+    for opt_level in "${opt_levels[@]}"; do
+        for iteration in "${iterations[@]}"; do
+            for value_threshold in "${value_thresholds[@]}"; do
+                echo "=== opt_level=$opt_level iterations=$iteration value_threshold=$value_threshold"
+                run --opt_level "$opt_level" --iterations "$iteration" --value_threshold "$value_threshold" "$@"
+            done
         done
     done
-done
-wait
+else
+    run "$@"
+fi
 
-
-# Parallel Computing
-
-# declare -a opt_levels=(1 1 )
-# declare -a iterations=(2 10)
-# declare -a value_thresholds=(0.8 0.8)
-
-# # Loop through configurations and run the script
-# for i in "${!opt_levels[@]}"; do
-#     srun --ntasks=1 --nodes=1 --cpus-per-task=$SLURM_CPUS_PER_TASK --mem=6GB --gres=gpu:1 python "$code"/compression/esp-dl/quantize_torch_model.py \
-#         --opt_level ${opt_levels[$i]} \
-#         --iterations ${iterations[$i]} \
-#         --value_threshold ${value_thresholds[$i]} \
-#         --working_dir $wd "$@" > "$log_path"_model_"${opt_levels[$i]}"_"${iterations[$i]}"_"${value_thresholds[$i]}".log 2>&1 &
-# done
-
-# # Wait for all background jobs to complete
-# wait
-
-echo "end of Training for Job "$SLURM_JOB_ID" :"
-echo `date +%Y.%m.%d-%H:%M:%S`
+echo "end of quantization for Job $SLURM_JOB_ID: $(date +%Y.%m.%d-%H:%M:%S)"

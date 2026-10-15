@@ -4,19 +4,27 @@
 
 # The config file should contain the following fields:
 # - batch_size: The batch size for the calibration and testing datasets.
-# - input_model_path: The path to the pre-trained PyTorch model file.
-# - dataset_path: The path to the dataset directory. The directory should contain the calibration and testing datasets.
+# - input_model_path: The path to the pre-trained PyTorch model file (full pickled model, *.pth).
+# - dataset_path: The path to the dataset directory. The directory should contain the train (calibration) and test splits.
 # - output_path: The path to the output directory.
 # - model_name: The name of the model.
 # - quant_config: The quantization configuration. The supported values are None, "LayerwiseEqualization_quantization", and "MixedPrecision_quantization".
+# Optional fields:
+# - mixed_precision_layers: Names of the layers quantized with 16 bit (required for "MixedPrecision_quantization").
+# - calib_size: Number of train images used for calibration, balanced over the classes (default: 1024).
+# - img_height, img_width: Model input size (default: 224).
+# - topk: Top-k accuracies to report, e.g. [1, 3] (default: 1).
+# - num_workers: DataLoader workers (default: 4).
+# - seed: Random seed for the calibration subset (default: 0).
 
 # -------------------------------------------
 # Import Libraries
 # --------------------------------------------
 import os
-from typing import Tuple, List, Tuple
+from typing import List, Optional
 import yaml
 import json
+import math
 import torch
 from utilities.calib_util import (
     load_pv_from_directory,
@@ -26,8 +34,9 @@ from utilities.calib_util import (
 from esp_ppq import QuantizationSettingFactory, QuantizationSetting
 from esp_ppq.api import espdl_quantize_torch, get_target_platform
 import argparse
-import torch.nn as nn
 import pandas as pd
+
+QUANT_METHODS = ["None", "LayerwiseEqualization_quantization", "MixedPrecision_quantization"]
 
 # -------------------------------------------
 # Helper Functions
@@ -45,53 +54,70 @@ def pretty_print_settings(d, indent=0):
             print("\t" * (indent + 1) + str(value))
 
 
+def parse_quant_method(quant_config) -> str:
+    """Normalize the quant_config entry of the config (YAML null, "None" or a method name) to one of QUANT_METHODS."""
+    method = "None" if quant_config is None else str(quant_config).strip()
+    if method not in QUANT_METHODS:
+        raise ValueError(f"Unsupported quant_config '{quant_config}'. Supported: {QUANT_METHODS}")
+    return method
+
+
 # Set the quantization settings for the model
-def set_quant_settings(optim_quant_method: List[str] = None) -> QuantizationSetting:
-    """Quantize onnx model with optim_quant_method.
+def set_quant_settings(method: str, args, target: str, mixed_precision_layers: Optional[List[str]] = None) -> QuantizationSetting:
+    """Create the ESP-DL quantization setting for the given method.
 
     Args:
-        optim_quant_method (List[str]): support 'MixedPrecision_quantization', 'LayerwiseEqualization_quantization'
-        -'MixedPrecision_quantization': if some layers in model have larger errors in 8-bit quantization, dispathching
-                                        the layers to 16-bit quantization. You can remove or add layers according to your
-                                        needs.
-        -'LayerwiseEqualization_quantization'： using weight equalization strategy, which is proposed by Markus Nagel.
+        method (str): one of QUANT_METHODS
+        -'MixedPrecision_quantization': if some layers in model have larger errors in 8-bit quantization, dispatching
+                                        the layers to 16-bit quantization. The layers are given by mixed_precision_layers
+                                        (operation names of the exported graph, e.g. "/features/features.0/Conv").
+        -'LayerwiseEqualization_quantization': using weight equalization strategy, which is proposed by Markus Nagel.
                                                 Refer to paper https://openaccess.thecvf.com/content_ICCV_2019/papers/Nagel_Data-Free_Quantization_Through_Weight_Equalization_and_Bias_Correction_ICCV_2019_paper.pdf for more information.
                                                 If ReLu6 layers are used in model, make sure to convert ReLU6 to ReLU for better precision.
+        args: parsed command line arguments with the equalization parameters
+        target (str): ESP-DL target platform, e.g. "esp32s3"
+        mixed_precision_layers (List[str]): layers quantized with 16 bit for 'MixedPrecision_quantization'
     Returns:
-        [tuple]: [QuantizationSetting, str]
+        QuantizationSetting
     """
     quant_setting = QuantizationSettingFactory.espdl_setting()
-    if optim_quant_method is not None and "None" not in optim_quant_method:
-        if "MixedPrecision_quantization" in optim_quant_method:
-            # These layers have larger errors in 8-bit quantization, dispatching to 16-bit quantization.
-            # You can remove or add layers according to your needs.
-            quant_setting.dispatching_table.append("/features/features.1/conv/conv.0/conv.0.0/Conv", get_target_platform(TARGET, 16, True))
-            quant_setting.dispatching_table.append("/features/features.16/conv/conv.1/conv.1.0/Conv", get_target_platform(TARGET, 16, True))
-        elif "LayerwiseEqualization_quantization" in optim_quant_method:
-            # layerwise equalization
-            quant_setting.equalization = True
-            quant_setting.equalization_setting.iterations = args.iterations
-            quant_setting.equalization_setting.value_threshold = args.value_threshold
-            quant_setting.equalization_setting.opt_level = args.opt_level
-            quant_setting.equalization_setting.including_bias = args.including_bias
-            quant_setting.equalization_setting.bias_multiplier = args.bias_multiplier
-            quant_setting.equalization_setting.including_act = args.including_act
-            quant_setting.equalization_setting.act_multiplier = args.act_multiplier
-            quant_setting.equalization_setting.interested_layers = None
+    if method == "MixedPrecision_quantization":
+        if not mixed_precision_layers:
+            raise ValueError("MixedPrecision_quantization needs the layer names to quantize with 16 bit in "
+                             "'mixed_precision_layers' of the config (names depend on the architecture).")
+        for layer in mixed_precision_layers:
+            quant_setting.dispatching_table.append(layer, get_target_platform(target, 16, True))
+    elif method == "LayerwiseEqualization_quantization":
+        quant_setting.equalization = True
+        quant_setting.equalization_setting.iterations = args.iterations
+        quant_setting.equalization_setting.value_threshold = args.value_threshold
+        quant_setting.equalization_setting.opt_level = args.opt_level
+        quant_setting.equalization_setting.including_bias = args.including_bias
+        quant_setting.equalization_setting.bias_multiplier = args.bias_multiplier
+        quant_setting.equalization_setting.including_act = args.including_act
+        quant_setting.equalization_setting.act_multiplier = args.act_multiplier
+        quant_setting.equalization_setting.interested_layers = None
 
-            print("Quantization settings: ")
-            pretty_print_settings(quant_setting.__dict__)
-        else:
-            raise ValueError("Please set optim_quant_method correctly. Support 'MixedPrecision_quantization', 'LayerwiseEqualization_quantization'")
+    print("Quantization settings: ")
+    pretty_print_settings(quant_setting.__dict__)
     return quant_setting
 
 
-def collate_fn1(x: Tuple) -> torch.Tensor:
-    return torch.cat([sample[0].unsqueeze(0) for sample in x], dim=0)
+def write_class_names_header(class_names: List[str], path: str):
+    """Write the class names in model output order as C++ header for the firmware
+    (deployment/main/include/classification_category_name.hpp)."""
+    with open(path, "w") as f:
+        f.write("#pragma once\n")
+        f.write(f"// Generated by quantize_torch_model.py, {len(class_names)} classes in model output order\n")
+        f.write("static const char *classification_cat_names[] = {\n")
+        f.writelines(f'    "{name}",\n' for name in class_names)
+        f.write("};\n")
 
 
-def collate_fn2(batch: torch.Tensor) -> torch.Tensor:
-    return batch.to(DEVICE)
+def make_collate_fn(device: str):
+    def collate_fn(batch: torch.Tensor) -> torch.Tensor:
+        return batch.to(device)
+    return collate_fn
 
 
 if __name__ == "__main__":
@@ -101,9 +127,9 @@ if __name__ == "__main__":
     argparser.add_argument("--opt_level", type=int, default=2, help="Optimization level for equalization.")
     argparser.add_argument("--iterations", type=int, default=10, help="Number of iterations for equalization.")
     argparser.add_argument("--value_threshold", type=float, default=0.5, help="Value threshold for equalization.")
-    argparser.add_argument("--including_bias", type=bool, default=False, help="Include bias in equalization.")
+    argparser.add_argument("--including_bias", action=argparse.BooleanOptionalAction, default=False, help="Include bias in equalization.")
     argparser.add_argument("--bias_multiplier", type=float, default=0.5, help="Bias multiplier for equalization.")
-    argparser.add_argument("--including_act", type=bool, default=False, help="Include activation in equalization.")
+    argparser.add_argument("--including_act", action=argparse.BooleanOptionalAction, default=False, help="Include activation in equalization.")
     argparser.add_argument("--act_multiplier", type=float, default=0.5, help="Activation multiplier for equalization.")
     args = argparser.parse_args()
 
@@ -111,12 +137,9 @@ if __name__ == "__main__":
     try:
         with open(args.config, "r") as file:
             config = yaml.safe_load(file)
-            input_model_subpath = config["input_model_path"]
-            dataset_subpath = config["dataset_path"]
-            output_subpath = config["output_path"]
-            input_model_path = os.path.join(args.working_dir, input_model_subpath)
-            dataset_path = os.path.join(args.working_dir, dataset_subpath)
-            output_path = os.path.join(args.working_dir, output_subpath)
+            input_model_path = os.path.join(args.working_dir, config["input_model_path"])
+            dataset_path = os.path.join(args.working_dir, config["dataset_path"])
+            output_path = os.path.join(args.working_dir, config["output_path"])
             os.makedirs(output_path, exist_ok=True)
             config["input_model_path"] = input_model_path
             config["dataset_path"] = dataset_path
@@ -125,6 +148,7 @@ if __name__ == "__main__":
             topk = tuple(
                 map(int, _topk if isinstance(_topk, (list, tuple)) else (_topk,))
             )
+            quant_method = parse_quant_method(config["quant_config"])
         print("Configuration:", json.dumps(config, sort_keys=True, indent=4))
     except Exception as e:
         # If the configuration file is not found or invalid, print an error message and exit
@@ -134,26 +158,24 @@ if __name__ == "__main__":
 
 
     BATCH_SIZE = config["batch_size"]
-    # DEVICE = "cpu"  #  'cuda' or 'cpu', if you use cuda, please make sure that cuda is available
-    DEVICE = ("cuda" if torch.cuda.is_available() else "cpu")  # Issues with inconsistent device types
+    DEVICE = ("cuda" if torch.cuda.is_available() else "cpu")
     TARGET = "esp32s3"
     NUM_OF_BITS = 8 # 8-bit quantization
+    CALIB_SIZE = config.get("calib_size", 1024)
     TORCH_PATH = config["input_model_path"]
-    ESPDL_MODLE_PATH = config["output_path"] + config["model_name"] + "_" + str(args.opt_level) + "_" + str(args.iterations) + "_" + str(args.value_threshold) + ".espdl"
-    CALIB_DIR = config["dataset_path"] + "train"
+    # The equalization parameters only distinguish runs of the layerwise equalization
+    if quant_method == "LayerwiseEqualization_quantization":
+        RUN_NAME = f"{config['model_name']}_{args.opt_level}_{args.iterations}_{args.value_threshold}"
+    else:
+        RUN_NAME = config["model_name"]
+    ESPDL_MODEL_PATH = os.path.join(output_path, RUN_NAME + ".espdl")
+    CALIB_DIR = os.path.join(dataset_path, "train")
     print(f"Calibration Dataset Directory: {CALIB_DIR}")
-    TEST_DIR = config["dataset_path"] + "test"
+    TEST_DIR = os.path.join(dataset_path, "test")
 
-    if "img_height" in config:
-        IMAGE_HEIGHT = config["img_height"]
-    else:
-        IMAGE_HEIGHT = 224
-    print(f"Image Height: {IMAGE_HEIGHT}")
-
-    if "img_width" in config:
-        IMAGE_WIDTH = config["img_width"]
-    else:
-        IMAGE_WIDTH = 224
+    IMAGE_HEIGHT = config.get("img_height", 224)
+    IMAGE_WIDTH = config.get("img_width", 224)
+    print(f"Image Size: {IMAGE_HEIGHT}x{IMAGE_WIDTH}")
 
     INPUT_SHAPE = [3, IMAGE_HEIGHT, IMAGE_WIDTH] # Torch format
 
@@ -163,25 +185,29 @@ if __name__ == "__main__":
     if os.path.exists(CALIB_DIR):
         print(f"load calibration dataset from directory: {CALIB_DIR}")
         dataset, dataloader = load_pv_from_directory(
-            directory=CALIB_DIR, 
-            subset=1024,
+            directory=CALIB_DIR,
+            subset=CALIB_SIZE,
             batchsize=BATCH_SIZE,
             require_label=False,
             num_of_workers=config.get("num_workers", 4),
-            img_height=IMAGE_HEIGHT, 
-            img_width=IMAGE_WIDTH
+            img_height=IMAGE_HEIGHT,
+            img_width=IMAGE_WIDTH,
+            seed=config.get("seed", 0),
         )
     else:
         raise ValueError("Please provide valid calibration dataset path")
+    # Use every calibration image exactly once, independent of the batch size
+    CALIB_STEPS = math.ceil(len(dataset) / BATCH_SIZE)
+    print(f"Calibration on {len(dataset)} images in {CALIB_STEPS} steps")
 
     if os.path.exists(TEST_DIR):
         print(f"load testing dataset from directory: {TEST_DIR}")
         test_dataset, test_dataloader = load_pv_from_directory(
-            directory=TEST_DIR, 
+            directory=TEST_DIR,
             batchsize=BATCH_SIZE,
             require_label=True,
             num_of_workers=config.get("num_workers", 4),
-            img_height=IMAGE_HEIGHT, 
+            img_height=IMAGE_HEIGHT,
             img_width=IMAGE_WIDTH
         )
     else:
@@ -191,7 +217,11 @@ if __name__ == "__main__":
     # Prepare Top-k Accuracy Setting
     # --------------------------------------------
 
-    num_classes = len(test_dataset.classes)
+    # ImageFolder numbers the classes alphabetically per split, so a class missing in one split shifts all indices
+    class_names = test_dataset.classes
+    if dataset.dataset.classes != class_names:
+        raise ValueError(f"train and test split have different classes:\n train: {dataset.dataset.classes}\n test: {class_names}")
+    num_classes = len(class_names)
     # Define top-k accuracy and precision tag
     # raise warning if one of topk values exceed num_classes and throw it away
     topk_acc = tuple([k for k in topk if k <= num_classes])
@@ -204,15 +234,23 @@ if __name__ == "__main__":
     # Load Model
     # --------------------------------------------
 
-    model = torch.load(TORCH_PATH)
+    # The .pth files of the training pipeline contain the full pickled model, not only the weights
+    model = torch.load(TORCH_PATH, map_location=DEVICE, weights_only=False)
     # Make sure to remove DataParallel wrapper if present
     model = model.module if isinstance(model, torch.nn.DataParallel) else model
+    model.eval()
+    with torch.no_grad():
+        num_outputs = model(torch.zeros([1] + INPUT_SHAPE, device=DEVICE)).shape[-1]
+    if num_outputs != num_classes:
+        raise ValueError(f"The model has {num_outputs} outputs, but the dataset {num_classes} classes. "
+                         f"Was it trained on another dataset version?")
 
     # -------------------------------------------
     # Set Quantization Setting
     # --------------------------------------------
 
-    quant_setting = set_quant_settings(config["quant_config"])
+    mixed_precision_layers = config.get("mixed_precision_layers")
+    quant_setting = set_quant_settings(quant_method, args, TARGET, mixed_precision_layers)
 
     # -------------------------------------------
     # Evaluate Original Model
@@ -228,7 +266,7 @@ if __name__ == "__main__":
         img_height=IMAGE_HEIGHT,
         img_width=IMAGE_WIDTH,
         print_confusion_matrix=True,
-        confusion_matrix_path=config["output_path"] + config["model_name"] + "_before_quantization_confusion_matrix.png",
+        confusion_matrix_path=os.path.join(output_path, config["model_name"] + "_before_quantization_confusion_matrix.png"),
         topk=topk_acc,
     )
 
@@ -238,13 +276,13 @@ if __name__ == "__main__":
 
     quant_ppq_graph = espdl_quantize_torch(
         model=model,
-        espdl_export_file=ESPDL_MODLE_PATH,
+        espdl_export_file=ESPDL_MODEL_PATH,
         calib_dataloader=dataloader,
-        calib_steps=32,
+        calib_steps=CALIB_STEPS,
         input_shape=[1] + INPUT_SHAPE,
         target=TARGET,
         num_of_bits=NUM_OF_BITS,
-        collate_fn=collate_fn2,
+        collate_fn=make_collate_fn(DEVICE),
         setting=quant_setting,
         device=DEVICE,
         error_report=True,
@@ -252,6 +290,18 @@ if __name__ == "__main__":
         export_test_values=False,
         verbose=1,
     )
+
+    # Class names for the firmware, belonging to this .espdl file
+    header_path = os.path.join(output_path, RUN_NAME + "_classification_category_name.hpp")
+    write_class_names_header(class_names, header_path)
+    print(f"Class names for the firmware written to {header_path}")
+
+    # The dispatching table silently ignores names that are not in the graph
+    if quant_method == "MixedPrecision_quantization":
+        missing = [layer for layer in mixed_precision_layers if layer not in quant_ppq_graph.operations]
+        if missing:
+            print(f"WARNING: mixed_precision_layers not found in the graph, they were quantized with {NUM_OF_BITS} bit: {missing}\n"
+                  f"Available operations: {sorted(quant_ppq_graph.operations)}")
 
     # -------------------------------------------
     # Evaluate Quantized Model
@@ -266,7 +316,7 @@ if __name__ == "__main__":
         print_confusion_matrix=True,
         img_height=IMAGE_HEIGHT,
         img_width=IMAGE_WIDTH,
-        confusion_matrix_path=config["output_path"] + config["model_name"] + "_" + str(args.opt_level) + "_" + str(args.iterations) + "_" + str(args.value_threshold) + "_confusion_matrix.png",
+        confusion_matrix_path=os.path.join(output_path, RUN_NAME + "_confusion_matrix.png"),
         topk=topk_acc,
     )
 
@@ -280,7 +330,10 @@ if __name__ == "__main__":
 
     results.update({
         "model_name": config["model_name"],
+        "espdl_file": os.path.basename(ESPDL_MODEL_PATH),
+        "quant_config": quant_method,
         "batch_size": BATCH_SIZE,
+        "calib_size": len(dataset),
         "opt_level": args.opt_level,
         "iterations": args.iterations,
         "value_threshold": args.value_threshold,
@@ -291,6 +344,6 @@ if __name__ == "__main__":
     })
 
     # concatenate the results and export to a csv file
-    output_csv_path = config["output_path"] + config["model_name"] + "_quant-metrics.csv"
+    output_csv_path = os.path.join(output_path, config["model_name"] + "_quant-metrics.csv")
     results_df = pd.DataFrame(results)
     results_df.to_csv(output_csv_path, mode="a", header=not os.path.exists(output_csv_path), index=False)

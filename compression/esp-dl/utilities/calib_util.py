@@ -1,4 +1,6 @@
+import random
 import time
+from collections import defaultdict
 from typing import Callable
 
 import onnxruntime
@@ -35,6 +37,37 @@ def accuracy(output, target, topk=(1,)):
     return res
 
 
+def collate_images_only(batch):
+    """Stack the images of a batch and drop the labels (calibration data). Module level, so it can be pickled
+    by DataLoader workers on Windows (spawn), unlike a lambda."""
+    return torch.cat([sample[0].unsqueeze(0) for sample in batch], dim=0)
+
+
+def stratified_subset_indices(targets, subset: int, seed: int = 0) -> list:
+    """Pick `subset` random sample indices spread as evenly as possible over all classes.
+
+    ImageFolder sorts its samples by class, so taking the first n samples would only cover the first classes.
+    Classes are drawn round-robin, classes with too few images contribute all of them.
+    """
+    rng = random.Random(seed)
+    per_class = defaultdict(list)
+    for idx, target in enumerate(targets):
+        per_class[target].append(idx)
+    for indices in per_class.values():
+        rng.shuffle(indices)
+
+    selected = []
+    queues = [per_class[c] for c in sorted(per_class)]
+    position = 0
+    while len(selected) < subset and any(position < len(q) for q in queues):
+        for q in queues:
+            if position < len(q) and len(selected) < subset:
+                selected.append(q[position])
+        position += 1
+    rng.shuffle(selected)
+    return selected
+
+
 def load_pv_from_directory(
     directory: str,
     subset: int = None,
@@ -43,15 +76,18 @@ def load_pv_from_directory(
     require_label: bool = True,
     num_of_workers: int = 12,
     img_height: int = 224,
-    img_width: int = 224
+    img_width: int = 224,
+    seed: int = 0,
 ) -> tuple[datasets.ImageFolder, torch.utils.data.DataLoader]:
     """
     A standardized Imagenet data loading process,
     directory: The location where the data is loaded
-    subset: If set to a non-empty value, a subset of the specified size is extracted from the dataset
+    subset: If set to a non-empty value, a random subset of the specified size, balanced over the classes,
+            is extracted from the dataset
     batchsize: The batch size of the data loader
     require_label: Whether labels are required
     shuffle: Whether to shuffle the dataset
+    seed: Random seed for the subset selection
     """
     dataset = datasets.ImageFolder(
         directory,
@@ -65,7 +101,7 @@ def load_pv_from_directory(
     )
 
     if subset:
-        dataset = Subset(dataset, indices=[_ for _ in range(0, subset)])
+        dataset = Subset(dataset, indices=stratified_subset_indices(dataset.targets, subset, seed))
     if require_label:
         dataloader = torch.utils.data.DataLoader(
             dataset = dataset,
@@ -82,7 +118,7 @@ def load_pv_from_directory(
             shuffle = shuffle,
             num_workers = num_of_workers,
             pin_memory = False,
-            collate_fn = lambda x: torch.cat([sample[0].unsqueeze(0) for sample in x], dim=0),
+            collate_fn = collate_images_only,
             drop_last = False,  # Data without labels is calibration data, so no need to drop
         )
     return dataset, dataloader
@@ -177,7 +213,7 @@ def _evaluate_any_module_with_pv(
     all_labels = []
 
     if imagenet_validation_loader is None:
-        imagenet_validation_loader = load_pv_from_directory(
+        _, imagenet_validation_loader = load_pv_from_directory(
             imagenet_validation_dir,
             batchsize=batchsize,
             shuffle=False,
@@ -370,6 +406,6 @@ def load_imagenet_from_directory(
             shuffle = shuffle,
             num_workers = num_of_workers,
             pin_memory = False,
-            collate_fn = lambda x: torch.cat([sample[0].unsqueeze(0) for sample in x], dim=0),
+            collate_fn = collate_images_only,
             drop_last = False,  # Data without labels is calibration data, so no need to drop
         )
