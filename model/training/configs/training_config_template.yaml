@@ -68,7 +68,12 @@ datasets: # List of datasets to be used for training
 # Non-required fields (default values available):
 batch_size: 32 # Batch size for training (default: 32)
 patience: 5 # Patience for early stopping, to disable set to 0 (default: 5)
-model_type: squeezenet # Type of the model. Choose from enum: ["shufflenet", "mobilenet", "efficientnet", "efficientnet_b0", "densenet", "squeezenet", "mnasnet"] (default: squeezenet)
+model_type: squeezenet # Type of the model. Choose from enum: ["shufflenet", "mobilenetv2", "mobilenetv3", "efficientnet", "efficientnet_b0", "densenet", "squeezenet", "mnasnet", "from_checkpoint"] (default: squeezenet)
+# weights_path: model/results/old_run/old_run_fine_tuning.pt # (optional) Initialize the model with the weights of an earlier run (.pt or .pth,
+                      # relative to --working_dir) instead of the ImageNet weights. Parameters with a different shape (classification head
+                      # if the number of classes changed) are skipped. Required for model_type "from_checkpoint", which takes the
+                      # architecture from the training config (.yaml) saved next to the checkpoint.
+# base_model_type: squeezenet # (optional) Architecture of weights_path for "from_checkpoint" if it cannot be inferred from the saved config
 num_workers: 4 # Number of workers for data loading (default: 4)
 
 # Loss configuration
@@ -93,4 +98,4 @@ num_unfreezed_feature_layers: 2  # Number of last feature layers to unfreeze dur
 requires_grad: False # Whether to require gradients for the model parameters (make them trainable) (default: False)
 check_corrupted_images: True # Whether to check for corrupted images in the dataset (default: False)
 pin_memory: True # Whether to pin memory during data loading (default: True)
-profile:- False  # Whether to profile the training process (causing training to be interrupted after few steps) (default: False) | FOR DEBUGGING ONLY
+profile: False # Whether to profile the training process (causing training to be interrupted after few steps) (default: False) | FOR DEBUGGING ONLY
