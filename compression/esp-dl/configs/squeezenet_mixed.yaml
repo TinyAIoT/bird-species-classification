@@ -7,3 +7,7 @@ dataset_path: data/v5/dataset/
 output_path: model/results/birdiary_v5_squeeze/compression/
 model_name: birdiary_v5_squeezenet_mixed
 quant_config: MixedPrecision_quantization # [None, "LayerwiseEqualization_quantization", "MixedPrecision_quantization"]
+# Layers quantized with 16 bit (operation names of the exported graph). Unknown names are reported after quantization.
+mixed_precision_layers:
+  - "/features/features.0/Conv"
+  - "/classifier/classifier.1/Conv"

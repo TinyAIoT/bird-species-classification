@@ -2,8 +2,12 @@
 batch_size: 32
 img_height: 224
 img_width: 224
-input_model_path: model/results/birdiary_v5_mobilenetv2/birdiary_v5_mobilenetv2_fine_tuning.pth
-dataset_path: data/v5/dataset/
-output_path: model/results/birdiary_v5_mobilenetv2/compression/
-model_name: birdiary_v5_mobilenetv2_mixed
+input_model_path: model/results/training/birdiary-v4-mobilenet/birdiary-v4-mobilenet_fine_tuning.pth
+dataset_path: data/data/v4/dataset/
+output_path: model/results/compression/birdiary_v4_mobilenetv2/compression/
+model_name: birdiary_v4_mobilenetv2_mixed
 quant_config: MixedPrecision_quantization # [None, "LayerwiseEqualization_quantization", "MixedPrecision_quantization"]
+# Layers quantized with 16 bit (operation names of the exported graph). Unknown names are reported after quantization.
+mixed_precision_layers:
+  - "/features/features.1/conv/conv.0/conv.0.0/Conv"
+  - "/features/features.16/conv/conv.1/conv.1.0/Conv"
